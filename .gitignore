@@ -1,0 +1,31 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual environments and local packages
+.venv/
+venv/
+env/
+.codex-python-packages/
+
+# Training outputs and experiment artifacts
+outputs/
+mjx_runs/
+ppo_logs/
+ppo_models/
+wandb/
+*.tfevents.*
+
+# MuJoCo/runtime logs
+MUJOCO_LOG.TXT
+MJDATA.TXT
+MJMODEL.TXT
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
