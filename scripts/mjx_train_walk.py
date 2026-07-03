@@ -30,7 +30,7 @@ def parse_args(argv=None):
     parser.add_argument("--activation", default="elu", choices=["relu", "tanh", "elu", "swish", "silu"])
     parser.add_argument("--xla-triton", action="store_true", default=True)
     parser.add_argument("--no-xla-triton", dest="xla_triton", action="store_false")
-    parser.add_argument("--mujoco-gl", default="osmesa")
+    parser.add_argument("--mujoco-gl", default="egl")
     parser.add_argument("--matmul-precision", default="high")
     parser.add_argument("--runtime-diagnostics", action="store_true", default=True)
     parser.add_argument("--no-runtime-diagnostics", dest="runtime_diagnostics", action="store_false")

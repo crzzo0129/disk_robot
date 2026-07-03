@@ -15,6 +15,13 @@ def test_mjx_walk_train_entry_defaults_to_cloud_smoke_scale():
 
     assert args.envs == 128
     assert args.episode_length == 128
+    assert args.mujoco_gl == "egl"
+
+
+def test_auto_mujoco_gl_prefers_egl_on_headless_linux():
+    from disk_robot_mjx.pipeline import select_mujoco_gl_backend
+
+    assert select_mujoco_gl_backend(environ={}, platform_name="linux") == "egl"
 
 
 def test_mjx_walk_env_is_not_left_as_placeholder():

@@ -61,3 +61,4 @@ python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128
 
 This is the first cloud smoke run. Larger runs should only start after the smoke run confirms MJX compilation, stepping, reward metrics, and parameter saving.
 
+On GPU compute nodes the training entrypoint defaults to `--mujoco-gl egl`. If a CPU/headless node has a working OSMesa stack instead, override with `--mujoco-gl osmesa`.

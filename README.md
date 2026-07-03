@@ -47,3 +47,4 @@ python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128
 ```
 
 The first cloud run should be treated as an MJX compilation and task-metric smoke test before longer PPO runs.
+The default MuJoCo GL backend for cloud training is `egl`; use `--mujoco-gl osmesa` only on machines with a working OSMesa stack.

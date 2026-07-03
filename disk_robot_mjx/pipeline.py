@@ -17,7 +17,7 @@ def select_mujoco_gl_backend(environ=None, platform_name=None):
     if configured:
         return configured
     if platform_name.startswith("linux") and not environ.get("DISPLAY"):
-        return "osmesa"
+        return "egl"
     return "glfw"
 
 
@@ -90,4 +90,3 @@ def make_network_factory(hidden_layers, activation):
         activation=activation_fn(activation),
         **kwargs,
     )
-
