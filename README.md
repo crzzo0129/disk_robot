@@ -20,6 +20,8 @@ python -m scripts.view_extreme_disk_pose --keyframe stand
 python -m scripts.view_extreme_disk_pose --keyframe folded
 python -m scripts.control_extreme_disk_flex --keyframe folded
 python -m scripts.interpolate_extreme_disk_pose
+python -m scripts.walk_smoke --steps 100 --policy zero
+python -m scripts.walk_smoke --steps 100 --policy random
 ```
 
 The current phase-1 baseline is `assets/disk_quadruped_extreme.xml` with two manually calibrated keyframes:
@@ -34,3 +36,14 @@ The XML keeps 12 independent position actuators. Paired front/rear flex control 
 - `stand` first frame has four foot-ground contacts, but the foot spheres start with penetration into the floor contact.
 - `folded` first frame places the disk torso on the ground and folds the feet upward, with foot-torso internal contacts to watch during later collision design.
 - Before walking training, see `docs/todo_extreme_disk_quadruped.md` and `docs/design_extreme_disk_quadruped.md`.
+
+## Stage 2 Walk Training
+
+Local work is limited to smoke tests. Cloud training starts from:
+
+```bash
+python -m pip install -r requirements-mjx.txt
+python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128
+```
+
+The first cloud run should be treated as an MJX compilation and task-metric smoke test before longer PPO runs.

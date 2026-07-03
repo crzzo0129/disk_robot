@@ -96,3 +96,11 @@ python -m scripts.diagnose_extreme_disk_pose --keyframe all
 - [ ] 向前滚动默认顺序：先前腿，后后腿。
 - [ ] 设计 `walk -> roll` 和 `roll -> walk` 的静止起步任务。
 - [ ] 后续再扩展到动态行走中切换。
+
+## 2026-07-03 Stage 2 walking update
+
+- Added local MuJoCo walk smoke environment: `disk_robot/walk_env.py`.
+- Added task config and reward modules: `disk_robot/walk_config.py`, `disk_robot/walk_reward.py`.
+- Added local smoke command: `python -m scripts.walk_smoke --steps 100 --policy zero`.
+- Added cloud-oriented MJX/Brax walk training entrypoint: `python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128`.
+- Stage 2 local validation is intentionally a smoke test, not local PPO training. Full training is expected to run on the compute platform.
