@@ -28,3 +28,10 @@ def test_mjx_walk_env_is_not_left_as_placeholder():
     source = open("disk_robot_mjx/brax_env.py", encoding="utf-8").read()
 
     assert "NotImplementedError" not in source
+
+
+def test_mjx_walk_env_preserves_brax_wrapper_info_keys():
+    source = open("disk_robot_mjx/brax_env.py", encoding="utf-8").read()
+
+    assert 'info = {\n                "target_ctrl"' not in source
+    assert "**state.info" in source

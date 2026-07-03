@@ -93,11 +93,11 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
 
             if self.settle_steps > 0:
                 data = jax.lax.scan(settle_step, data, (), length=self.settle_steps)[0]
-            info = {
-                "target_ctrl": joint_q,
-                "previous_action": jp.zeros(self.config.action_size),
-                "step_count": jp.array(0, dtype=jp.int32),
-            }
+            info = dict(
+                target_ctrl=joint_q,
+                previous_action=jp.zeros(self.config.action_size),
+                step_count=jp.array(0, dtype=jp.int32),
+            )
             metrics = self._empty_metrics()
             return State(data, self._obs(data, info["previous_action"]), jp.array(0.0), jp.array(0.0), metrics, info)
 
@@ -141,6 +141,7 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
                 0.0,
             )
             info = {
+                **state.info,
                 "target_ctrl": target_ctrl,
                 "previous_action": action,
                 "step_count": step_count,
