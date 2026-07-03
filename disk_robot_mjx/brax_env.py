@@ -163,7 +163,7 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
             )
 
         def _upright(self, data):
-            return data.xmat[self.torso_body_id][8]
+            return data.xmat[self.torso_body_id, 2, 2]
 
         def _contact_geoms(self, data):
             contact = data.contact
@@ -187,7 +187,7 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
                 ((geom1 == self.torso_geom_id) & (geom2 == self.floor_geom_id))
                 | ((geom2 == self.torso_geom_id) & (geom1 == self.floor_geom_id))
             )
-            return jp.sum(valid & disk_pair)
+            return jp.sum(valid & disk_pair).astype(jp.float32)
 
         def _reward(
             self,
