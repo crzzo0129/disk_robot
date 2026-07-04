@@ -6,10 +6,26 @@ from disk_robot.walk_config import ACTUATOR_NAMES, FOOT_GEOMS, JOINT_NAMES, Walk
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-XML_PATH = PROJECT_ROOT / "assets" / "disk_quadruped_extreme.xml"
+DEBUG_XML_PATH = PROJECT_ROOT / "assets" / "disk_quadruped_extreme.xml"
+TRAIN_XML_PATH = PROJECT_ROOT / "assets" / "disk_quadruped_extreme_train.xml"
+XML_PATH = TRAIN_XML_PATH
 
 
-def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_steps: int = 0):
+def _resolve_xml_path(xml_path: str | Path | None) -> Path:
+    if xml_path is None:
+        return TRAIN_XML_PATH
+    path = Path(xml_path).expanduser()
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def make_brax_env(
+    config: WalkTaskConfig | None = None,
+    seed: int = 0,
+    settle_steps: int = 0,
+    xml_path: str | Path | None = None,
+):
     try:
         import jax
         import jax.numpy as jp
@@ -23,13 +39,15 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
         ) from exc
 
     task_config = config or WalkTaskConfig()
+    selected_xml_path = _resolve_xml_path(xml_path)
 
     class DiskRobotWalkBraxEnv(Env):
         def __init__(self):
             self.config = task_config
             self.seed = int(seed)
             self.settle_steps = int(settle_steps)
-            self.model = mujoco.MjModel.from_xml_path(str(XML_PATH))
+            self.xml_path = selected_xml_path
+            self.model = mujoco.MjModel.from_xml_path(str(selected_xml_path))
             self.cpu_data = mujoco.MjData(self.model)
             key_id = self.model.key("stand").id
             mujoco.mj_resetDataKeyframe(self.model, self.cpu_data, key_id)
@@ -93,18 +111,26 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
 
             if self.settle_steps > 0:
                 data = jax.lax.scan(settle_step, data, (), length=self.settle_steps)[0]
+            foot_contacts = self._foot_contacts(data)
             info = dict(
+                neutral_ctrl=joint_q,
                 target_ctrl=joint_q,
                 previous_action=jp.zeros(self.config.action_size),
+                last_foot_contacts=foot_contacts,
+                feet_air_time=jp.zeros_like(foot_contacts),
                 step_count=jp.array(0, dtype=jp.int32),
             )
             metrics = self._empty_metrics()
             return State(data, self._obs(data, info["previous_action"]), jp.array(0.0), jp.array(0.0), metrics, info)
 
         def step(self, state, action):
-            action = jp.clip(action, -self.config.action_scale, self.config.action_scale)
+            action = jp.clip(action, -1.0, 1.0)
             old_x = state.pipeline_state.xpos[self.torso_body_id][0]
-            target_ctrl = jp.clip(state.info["target_ctrl"] + action, self.ctrl_low, self.ctrl_high)
+            target_ctrl = jp.clip(
+                state.info["neutral_ctrl"] + self.config.action_scale * action,
+                self.ctrl_low,
+                self.ctrl_high,
+            )
             data = state.pipeline_state.replace(
                 ctrl=state.pipeline_state.ctrl.at[self.actuator_ids].set(target_ctrl)
             )
@@ -117,22 +143,16 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
             dt = self.model.opt.timestep * max(1, self.config.action_repeat)
             forward_velocity = (data.xpos[self.torso_body_id][0] - old_x) / jp.maximum(dt, 1e-9)
             lateral_velocity = data.cvel[self.torso_body_id][4]
+            vertical_velocity = data.cvel[self.torso_body_id][5]
+            angular_velocity_xy_mean_square = jp.mean(jp.square(data.cvel[self.torso_body_id][0:2]))
+            joint_velocity_mean_square = jp.mean(jp.square(data.qvel[self.dof_indices]))
             torso_height = data.xpos[self.torso_body_id][2]
             upright = self._upright(data)
             foot_contacts = self._foot_contacts(data)
             foot_contact_count = jp.sum(foot_contacts)
+            first_contact = (state.info["feet_air_time"] > 0.0) * foot_contacts
+            feet_air_time = state.info["feet_air_time"] + dt * (1.0 - foot_contacts)
             disk_contact_count = self._disk_contact_count(data)
-            action_delta = action - state.info["previous_action"]
-            reward, metrics = self._reward(
-                forward_velocity,
-                lateral_velocity,
-                torso_height,
-                upright,
-                disk_contact_count,
-                foot_contact_count,
-                action,
-                action_delta,
-            )
             done = jp.where(
                 (torso_height < self.config.min_torso_height)
                 | (upright < self.config.terminate_upright)
@@ -140,10 +160,29 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
                 1.0,
                 0.0,
             )
+            action_delta = action - state.info["previous_action"]
+            reward, metrics = self._reward(
+                forward_velocity,
+                lateral_velocity,
+                vertical_velocity,
+                angular_velocity_xy_mean_square,
+                joint_velocity_mean_square,
+                torso_height,
+                upright,
+                disk_contact_count,
+                foot_contact_count,
+                state.info["feet_air_time"],
+                first_contact,
+                action,
+                action_delta,
+                done,
+            )
             info = {
                 **state.info,
                 "target_ctrl": target_ctrl,
                 "previous_action": action,
+                "last_foot_contacts": foot_contacts,
+                "feet_air_time": feet_air_time * (1.0 - foot_contacts),
                 "step_count": step_count,
             }
             return State(data, self._obs(data, action), reward, done, metrics, info)
@@ -193,50 +232,91 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
             self,
             forward_velocity,
             lateral_velocity,
+            vertical_velocity,
+            angular_velocity_xy_mean_square,
+            joint_velocity_mean_square,
             torso_height,
             upright,
             disk_contact_count,
             foot_contact_count,
+            feet_air_time,
+            first_contact,
             action,
             action_delta,
+            done,
         ):
             cfg = self.config
             velocity_error = forward_velocity - cfg.command_velocity
-            r_velocity = cfg.reward_velocity * (1.0 - velocity_error * velocity_error)
+            r_velocity = cfg.reward_velocity * jp.exp(-(velocity_error * velocity_error) / cfg.tracking_sigma)
+            r_forward = cfg.reward_forward * forward_velocity
             r_lateral = -cfg.reward_lateral * lateral_velocity * lateral_velocity
+            r_lin_vel_z = -cfg.penalty_lin_vel_z * vertical_velocity * vertical_velocity
+            r_ang_vel_xy = -cfg.penalty_ang_vel_xy * angular_velocity_xy_mean_square
+            r_joint_vel = -cfg.penalty_joint_vel * joint_velocity_mean_square
             r_upright = -cfg.reward_upright * jp.maximum(0.0, 1.0 - upright)
+            r_upright_positive = cfg.reward_upright_positive * jp.maximum(0.0, upright)
             r_height = -cfg.reward_height * jp.maximum(0.0, cfg.min_torso_height - torso_height)
+            height_error = torso_height - cfg.target_torso_height
+            r_height_target = cfg.reward_height_target * jp.exp(
+                -(height_error * height_error) / cfg.height_tracking_sigma
+            )
             r_contact = cfg.reward_contact * jp.minimum(foot_contact_count, 4.0) / 4.0
+            r_feet_air_time = cfg.reward_feet_air_time * jp.sum(
+                jp.maximum(feet_air_time - cfg.min_feet_air_time, 0.0) * first_contact
+            )
             r_disk_contact = -cfg.penalty_disk_contact * disk_contact_count
             r_action = -cfg.penalty_action * jp.mean(jp.square(action))
             r_action_delta = -cfg.penalty_action_delta * jp.mean(jp.square(action_delta))
-            r_alive = jp.array(0.1)
+            r_termination = -cfg.penalty_termination * done
+            r_alive = jp.array(cfg.reward_alive)
             reward = (
                 r_velocity
+                + r_forward
                 + r_lateral
+                + r_lin_vel_z
+                + r_ang_vel_xy
+                + r_joint_vel
                 + r_upright
+                + r_upright_positive
                 + r_height
+                + r_height_target
                 + r_contact
+                + r_feet_air_time
                 + r_disk_contact
                 + r_action
                 + r_action_delta
+                + r_termination
                 + r_alive
             )
             metrics = {
                 "reward": reward,
                 "reward_velocity": r_velocity,
+                "reward_forward": r_forward,
                 "reward_lateral": r_lateral,
+                "reward_lin_vel_z": r_lin_vel_z,
+                "reward_ang_vel_xy": r_ang_vel_xy,
+                "reward_joint_vel": r_joint_vel,
                 "reward_upright": r_upright,
+                "reward_upright_positive": r_upright_positive,
                 "reward_height": r_height,
+                "reward_height_target": r_height_target,
                 "reward_contact": r_contact,
+                "reward_feet_air_time": r_feet_air_time,
                 "reward_disk_contact": r_disk_contact,
                 "reward_action": r_action,
                 "reward_action_delta": r_action_delta,
+                "reward_termination": r_termination,
                 "reward_alive": r_alive,
                 "forward_velocity": forward_velocity,
+                "vertical_velocity": vertical_velocity,
+                "angular_velocity_xy_mean_square": angular_velocity_xy_mean_square,
+                "joint_velocity_mean_square": joint_velocity_mean_square,
                 "torso_height": torso_height,
                 "upright": upright,
+                "done": done,
                 "foot_contact_count": foot_contact_count,
+                "feet_air_time": jp.sum(feet_air_time),
+                "first_contact_count": jp.sum(first_contact),
                 "disk_contact_count": disk_contact_count,
             }
             return reward, metrics
@@ -246,18 +326,32 @@ def make_brax_env(config: WalkTaskConfig | None = None, seed: int = 0, settle_st
             return {
                 "reward": zero,
                 "reward_velocity": zero,
+                "reward_forward": zero,
                 "reward_lateral": zero,
+                "reward_lin_vel_z": zero,
+                "reward_ang_vel_xy": zero,
+                "reward_joint_vel": zero,
                 "reward_upright": zero,
+                "reward_upright_positive": zero,
                 "reward_height": zero,
+                "reward_height_target": zero,
                 "reward_contact": zero,
+                "reward_feet_air_time": zero,
                 "reward_disk_contact": zero,
                 "reward_action": zero,
                 "reward_action_delta": zero,
+                "reward_termination": zero,
                 "reward_alive": zero,
                 "forward_velocity": zero,
+                "vertical_velocity": zero,
+                "angular_velocity_xy_mean_square": zero,
+                "joint_velocity_mean_square": zero,
                 "torso_height": zero,
                 "upright": zero,
+                "done": zero,
                 "foot_contact_count": zero,
+                "feet_air_time": zero,
+                "first_contact_count": zero,
                 "disk_contact_count": zero,
             }
 

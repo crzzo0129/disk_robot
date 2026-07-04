@@ -77,26 +77,33 @@ class DiskRobotWalkEnv:
         dt = self.model.opt.timestep * max(1, self.config.action_repeat)
         forward_velocity = (float(self.data.xpos[self.torso_body_id][0]) - old_x) / max(dt, 1e-9)
         lateral_velocity = float(self.data.cvel[self.torso_body_id][4])
+        vertical_velocity = float(self.data.cvel[self.torso_body_id][5])
+        angular_velocity_xy_mean_square = float(np.mean(np.square(self.data.cvel[self.torso_body_id][0:2])))
+        joint_velocity_mean_square = float(np.mean(np.square(self.data.qvel[self.dof_indices])))
         torso_height = float(self.data.xpos[self.torso_body_id][2])
         upright = self._upright()
         disk_contacts = self._disk_contact_count()
         foot_contacts = self._foot_contacts()
+        terminated = torso_height < self.config.min_torso_height or upright < self.config.terminate_upright
+        truncated = self.step_count >= self.config.max_episode_steps
         action_delta = action - self.previous_action
         reward = compute_walk_reward(
             config=self.config,
             forward_velocity=forward_velocity,
             lateral_velocity=lateral_velocity,
+            vertical_velocity=vertical_velocity,
+            angular_velocity_xy_mean_square=angular_velocity_xy_mean_square,
+            joint_velocity_mean_square=joint_velocity_mean_square,
             torso_height=torso_height,
             upright=upright,
             disk_contact_count=disk_contacts,
             foot_contact_count=int(np.sum(foot_contacts)),
             action_mean_square=float(np.mean(np.square(action))),
             action_delta_mean_square=float(np.mean(np.square(action_delta))),
+            done=terminated,
         )
         self.previous_action = action
         self.last_reward = reward
-        terminated = torso_height < self.config.min_torso_height or upright < self.config.terminate_upright
-        truncated = self.step_count >= self.config.max_episode_steps
         info = self._info(forward_velocity, lateral_velocity, upright, disk_contacts)
         return self._obs(), reward.total, bool(terminated), bool(truncated), info
 

@@ -16,6 +16,7 @@ def test_mjx_walk_train_entry_defaults_to_cloud_smoke_scale():
     assert args.envs == 128
     assert args.episode_length == 128
     assert args.mujoco_gl == "egl"
+    assert args.xml_path.name == "disk_quadruped_extreme_train.xml"
 
 
 def test_auto_mujoco_gl_prefers_egl_on_headless_linux():

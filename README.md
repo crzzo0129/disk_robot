@@ -1,4 +1,4 @@
-# Disk Robot
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        # Disk Robot
 
 MuJoCo model and phase-1 tools for an extreme disk-body quadruped. The robot keeps a normal quadruped layout, while the torso is a thin disk/cylinder: side view is close to a circle, front view remains narrow.
 
