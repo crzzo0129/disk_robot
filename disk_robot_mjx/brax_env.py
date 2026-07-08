@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from disk_robot.gait import (
+    GaitParams,
+    desired_contacts_at_time_jax,
+    leg_phase_offsets,
+    make_open_loop_targets_jax,
+    phase_observation_jax,
+)
 from disk_robot.walk_config import ACTUATOR_NAMES, FOOT_GEOMS, JOINT_NAMES, WalkTaskConfig
+from disk_robot.walk_reward import REWARD_TERM_NAMES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -49,7 +57,7 @@ def make_brax_env(
             self.xml_path = selected_xml_path
             self.model = mujoco.MjModel.from_xml_path(str(selected_xml_path))
             self.cpu_data = mujoco.MjData(self.model)
-            key_id = self.model.key("stand").id
+            key_id = self.model.key("walk_stand").id
             mujoco.mj_resetDataKeyframe(self.model, self.cpu_data, key_id)
             mujoco.mj_forward(self.model, self.cpu_data)
             self.mjx_model = mjx.put_model(self.model)
@@ -71,6 +79,20 @@ def make_brax_env(
             self.torso_geom_id = int(self.model.geom("torso_disk").id)
             self.floor_geom_id = int(self.model.geom("floor").id)
             self.foot_geom_ids = jp.array([self.model.geom(name).id for name in FOOT_GEOMS], dtype=jp.int32)
+            self.gait_params = GaitParams(
+                frequency=self.config.gait_frequency,
+                hip_stance_amplitude=self.config.gait_hip_stance_amplitude,
+                hip_swing_amplitude=self.config.gait_hip_swing_amplitude,
+                knee_lift_amplitude=self.config.gait_knee_lift_amplitude,
+                abd_amplitude=self.config.gait_abd_amplitude,
+                duty=self.config.gait_duty,
+                mode=self.config.gait_mode,
+                direction=self.config.gait_direction,
+                front_knee_sign=self.config.gait_front_knee_sign,
+                hind_knee_sign=self.config.gait_hind_knee_sign,
+                march_hip_compensation=self.config.gait_march_hip_compensation,
+            )
+            self.gait_phase_offsets = jp.array(leg_phase_offsets(self.config.gait_mode))
 
         @property
         def observation_size(self):
@@ -102,7 +124,9 @@ def make_brax_env(
             qpos = self.base_data.qpos.at[self.qpos_indices].set(joint_q)
             qpos = qpos.at[2].add(height_noise)
             qvel = jp.zeros_like(self.base_data.qvel)
-            ctrl = self.base_data.ctrl.at[self.actuator_ids].set(joint_q)
+            gait_ctrl = self._gait_ctrl(joint_q, jp.array(0, dtype=jp.int32))
+            initial_ctrl = jp.where(self.config.use_open_loop_gait, gait_ctrl, joint_q)
+            ctrl = self.base_data.ctrl.at[self.actuator_ids].set(initial_ctrl)
             data = self.base_data.replace(qpos=qpos, qvel=qvel, ctrl=ctrl)
             data = mjx.forward(self.mjx_model, data)
 
@@ -114,20 +138,27 @@ def make_brax_env(
             foot_contacts = self._foot_contacts(data)
             info = dict(
                 neutral_ctrl=joint_q,
-                target_ctrl=joint_q,
+                target_ctrl=initial_ctrl,
                 previous_action=jp.zeros(self.config.action_size),
                 last_foot_contacts=foot_contacts,
                 feet_air_time=jp.zeros_like(foot_contacts),
+                last_foot_pos=data.geom_xpos[self.foot_geom_ids],
+                obs_history=jp.zeros(self.config.observation_size),
                 step_count=jp.array(0, dtype=jp.int32),
             )
             metrics = self._empty_metrics()
-            return State(data, self._obs(data, info["previous_action"]), jp.array(0.0), jp.array(0.0), metrics, info)
+            obs = self._update_obs_history(info["obs_history"], self._obs_frame(data, info["previous_action"], info["step_count"]))
+            info = {**info, "obs_history": obs}
+            return State(data, obs, jp.array(0.0), jp.array(0.0), metrics, info)
 
         def step(self, state, action):
             action = jp.clip(action, -1.0, 1.0)
-            old_x = state.pipeline_state.xpos[self.torso_body_id][0]
+            old_pos = state.pipeline_state.xpos[self.torso_body_id]
+            gait_ctrl = self._gait_ctrl(state.info["neutral_ctrl"], state.info["step_count"])
+            action_scale = jp.where(self.config.use_open_loop_gait, self.config.residual_action_scale, self.config.action_scale)
+            base_ctrl = jp.where(self.config.use_open_loop_gait, gait_ctrl, state.info["neutral_ctrl"])
             target_ctrl = jp.clip(
-                state.info["neutral_ctrl"] + self.config.action_scale * action,
+                base_ctrl + action_scale * action,
                 self.ctrl_low,
                 self.ctrl_high,
             )
@@ -141,10 +172,16 @@ def make_brax_env(
             data = jax.lax.scan(physics_step, data, (), length=max(1, self.config.action_repeat))[0]
             step_count = state.info["step_count"] + 1
             dt = self.model.opt.timestep * max(1, self.config.action_repeat)
-            forward_velocity = (data.xpos[self.torso_body_id][0] - old_x) / jp.maximum(dt, 1e-9)
-            lateral_velocity = data.cvel[self.torso_body_id][4]
+            world_velocity = (data.xpos[self.torso_body_id] - old_pos) / jp.maximum(dt, 1e-9)
+            torso_x_axis = data.xmat[self.torso_body_id, :, 0]
+            torso_y_axis = data.xmat[self.torso_body_id, :, 1]
+            forward_velocity = jp.dot(world_velocity, torso_x_axis)
+            lateral_velocity = jp.dot(world_velocity, torso_y_axis)
+            yaw_rate = data.cvel[self.torso_body_id][2]
+            _, heading_sin = self._heading_observation(data)
+            heading_error = heading_sin
             vertical_velocity = data.cvel[self.torso_body_id][5]
-            angular_velocity_xy_mean_square = jp.mean(jp.square(data.cvel[self.torso_body_id][0:2]))
+            roll_pitch_rate_mean_square = jp.mean(jp.square(data.cvel[self.torso_body_id][0:2]))
             joint_velocity_mean_square = jp.mean(jp.square(data.qvel[self.dof_indices]))
             torso_height = data.xpos[self.torso_body_id][2]
             upright = self._upright(data)
@@ -153,29 +190,41 @@ def make_brax_env(
             first_contact = (state.info["feet_air_time"] > 0.0) * foot_contacts
             feet_air_time = state.info["feet_air_time"] + dt * (1.0 - foot_contacts)
             disk_contact_count = self._disk_contact_count(data)
-            done = jp.where(
-                (torso_height < self.config.min_torso_height)
-                | (upright < self.config.terminate_upright)
-                | (step_count >= self.config.max_episode_steps),
-                1.0,
-                0.0,
-            )
+            foot_pos = data.geom_xpos[self.foot_geom_ids]
+            foot_xy_velocity = (foot_pos[:, :2] - state.info["last_foot_pos"][:, :2]) / jp.maximum(dt, 1e-9)
+            foot_slip_mean_square = jp.mean(jp.sum(jp.square(foot_xy_velocity), axis=1) * foot_contacts)
+            height_failed = torso_height < self.config.min_torso_height
+            upright_failed = upright < self.config.terminate_upright
+            timeout = step_count >= self.config.max_episode_steps
+            failed = height_failed | upright_failed
+            done = jp.where(failed | timeout, 1.0, 0.0)
+            height_failed = height_failed.astype(jp.float32)
+            upright_failed = upright_failed.astype(jp.float32)
+            timeout = timeout.astype(jp.float32)
+            failed = failed.astype(jp.float32)
             action_delta = action - state.info["previous_action"]
             reward, metrics = self._reward(
                 forward_velocity,
                 lateral_velocity,
                 vertical_velocity,
-                angular_velocity_xy_mean_square,
+                roll_pitch_rate_mean_square,
                 joint_velocity_mean_square,
                 torso_height,
                 upright,
                 disk_contact_count,
                 foot_contact_count,
+                yaw_rate,
+                heading_error,
+                self._contact_schedule_match(foot_contacts, step_count),
                 state.info["feet_air_time"],
                 first_contact,
                 action,
                 action_delta,
-                done,
+                foot_slip_mean_square,
+                failed,
+                timeout,
+                height_failed,
+                upright_failed,
             )
             info = {
                 **state.info,
@@ -183,26 +232,60 @@ def make_brax_env(
                 "previous_action": action,
                 "last_foot_contacts": foot_contacts,
                 "feet_air_time": feet_air_time * (1.0 - foot_contacts),
+                "last_foot_pos": foot_pos,
                 "step_count": step_count,
             }
-            return State(data, self._obs(data, action), reward, done, metrics, info)
+            obs = self._update_obs_history(state.info["obs_history"], self._obs_frame(data, action, step_count))
+            info = {**info, "obs_history": obs}
+            return State(data, obs, reward, done, metrics, info)
 
-        def _obs(self, data, previous_action):
+        def _update_obs_history(self, obs_history, obs_frame):
+            return jp.roll(obs_history, self.config.observation_frame_size).at[: self.config.observation_frame_size].set(
+                obs_frame
+            )
+
+        def _gait_time(self, step_count):
+            dt = self.model.opt.timestep * max(1, self.config.action_repeat)
+            return self.config.gait_time_offset + step_count * dt
+
+        def _gait_phase(self, step_count):
+            return jp.mod(self._gait_time(step_count) * self.config.gait_frequency, 1.0)
+
+        def _gait_ctrl(self, neutral_ctrl, step_count):
+            return make_open_loop_targets_jax(jp, neutral_ctrl, self._gait_time(step_count), self.gait_params, self.gait_phase_offsets)
+
+        def _obs_frame(self, data, previous_action, step_count):
             return jp.concatenate(
                 [
                     data.xquat[self.torso_body_id],
                     data.cvel[self.torso_body_id][3:6],
                     data.cvel[self.torso_body_id][0:3],
+                    jp.array([data.xpos[self.torso_body_id][2]]),
                     data.qpos[self.qpos_indices],
                     data.qvel[self.dof_indices],
                     previous_action,
                     self._foot_contacts(data),
                     jp.array([self.config.command_velocity]),
+                    phase_observation_jax(jp, self._gait_phase(step_count)),
+                    jp.array(self._heading_observation(data)),
+                    self._desired_contacts(step_count),
                 ]
             )
 
         def _upright(self, data):
             return data.xmat[self.torso_body_id, 2, 2]
+
+        def _heading_observation(self, data):
+            heading = data.xmat[self.torso_body_id, :, 0]
+            norm = jp.maximum(jp.linalg.norm(heading[:2]), 1e-6)
+            return heading[0] / norm, heading[1] / norm
+
+        def _desired_contacts(self, step_count):
+            return desired_contacts_at_time_jax(jp, self._gait_time(step_count), self.gait_params, self.gait_phase_offsets)
+
+        def _contact_schedule_match(self, foot_contacts, step_count):
+            desired = self._desired_contacts(step_count)
+            return jp.mean(1.0 - jp.abs(foot_contacts - desired))
 
         def _contact_geoms(self, data):
             contact = data.contact
@@ -233,87 +316,73 @@ def make_brax_env(
             forward_velocity,
             lateral_velocity,
             vertical_velocity,
-            angular_velocity_xy_mean_square,
+            roll_pitch_rate_mean_square,
             joint_velocity_mean_square,
             torso_height,
             upright,
             disk_contact_count,
             foot_contact_count,
+            yaw_rate,
+            heading_error,
+            contact_schedule_match,
             feet_air_time,
             first_contact,
             action,
             action_delta,
-            done,
+            foot_slip_mean_square,
+            failed,
+            timeout,
+            height_failed,
+            upright_failed,
         ):
             cfg = self.config
             velocity_error = forward_velocity - cfg.command_velocity
-            r_velocity = cfg.reward_velocity * jp.exp(-(velocity_error * velocity_error) / cfg.tracking_sigma)
-            r_forward = cfg.reward_forward * forward_velocity
-            r_lateral = -cfg.reward_lateral * lateral_velocity * lateral_velocity
-            r_lin_vel_z = -cfg.penalty_lin_vel_z * vertical_velocity * vertical_velocity
-            r_ang_vel_xy = -cfg.penalty_ang_vel_xy * angular_velocity_xy_mean_square
-            r_joint_vel = -cfg.penalty_joint_vel * joint_velocity_mean_square
-            r_upright = -cfg.reward_upright * jp.maximum(0.0, 1.0 - upright)
-            r_upright_positive = cfg.reward_upright_positive * jp.maximum(0.0, upright)
-            r_height = -cfg.reward_height * jp.maximum(0.0, cfg.min_torso_height - torso_height)
             height_error = torso_height - cfg.target_torso_height
-            r_height_target = cfg.reward_height_target * jp.exp(
-                -(height_error * height_error) / cfg.height_tracking_sigma
-            )
-            r_contact = cfg.reward_contact * jp.minimum(foot_contact_count, 4.0) / 4.0
-            r_feet_air_time = cfg.reward_feet_air_time * jp.sum(
-                jp.maximum(feet_air_time - cfg.min_feet_air_time, 0.0) * first_contact
-            )
-            r_disk_contact = -cfg.penalty_disk_contact * disk_contact_count
-            r_action = -cfg.penalty_action * jp.mean(jp.square(action))
-            r_action_delta = -cfg.penalty_action_delta * jp.mean(jp.square(action_delta))
-            r_termination = -cfg.penalty_termination * done
-            r_alive = jp.array(cfg.reward_alive)
-            reward = (
-                r_velocity
-                + r_forward
-                + r_lateral
-                + r_lin_vel_z
-                + r_ang_vel_xy
-                + r_joint_vel
-                + r_upright
-                + r_upright_positive
-                + r_height
-                + r_height_target
-                + r_contact
-                + r_feet_air_time
-                + r_disk_contact
-                + r_action
-                + r_action_delta
-                + r_termination
-                + r_alive
-            )
+            terms = {
+                "velocity": cfg.reward_velocity * jp.exp(-(velocity_error * velocity_error) / cfg.tracking_sigma),
+                "forward": cfg.reward_forward * forward_velocity,
+                "lateral": -cfg.reward_lateral * lateral_velocity,
+                "yaw": -cfg.penalty_yaw_rate * yaw_rate * yaw_rate,
+                "heading": -cfg.penalty_heading_error * heading_error * heading_error,
+                "lin_vel_z": -cfg.penalty_lin_vel_z * vertical_velocity * vertical_velocity,
+                "ang_vel_xy": -cfg.penalty_ang_vel_xy * roll_pitch_rate_mean_square,
+                "joint_vel": -cfg.penalty_joint_vel * joint_velocity_mean_square,
+                "upright": -cfg.reward_upright * jp.maximum(0.0, 1.0 - upright),
+                "upright_positive": cfg.reward_upright_positive * jp.maximum(0.0, upright),
+                "height": -cfg.reward_height * jp.maximum(0.0, cfg.min_torso_height - torso_height),
+                "height_target": cfg.reward_height_target * jp.exp(
+                    -(height_error * height_error) / cfg.height_tracking_sigma
+                ),
+                "contact": cfg.reward_contact * jp.minimum(foot_contact_count, 4.0) / 4.0,
+                "contact_schedule": cfg.reward_contact_schedule * contact_schedule_match,
+                "feet_air_time": cfg.reward_feet_air_time
+                * jp.sum(jp.maximum(feet_air_time - cfg.min_feet_air_time, 0.0) * first_contact),
+                "disk_contact": -cfg.penalty_disk_contact * disk_contact_count,
+                "action": -cfg.penalty_action * jp.mean(jp.square(action)),
+                "action_delta": -cfg.penalty_action_delta * jp.mean(jp.square(action_delta)),
+                "foot_slip": -cfg.penalty_foot_slip * foot_slip_mean_square,
+                "termination": -cfg.penalty_termination * failed,
+                "alive": jp.array(cfg.reward_alive),
+            }
+            reward = sum(terms.values())
             metrics = {
                 "reward": reward,
-                "reward_velocity": r_velocity,
-                "reward_forward": r_forward,
-                "reward_lateral": r_lateral,
-                "reward_lin_vel_z": r_lin_vel_z,
-                "reward_ang_vel_xy": r_ang_vel_xy,
-                "reward_joint_vel": r_joint_vel,
-                "reward_upright": r_upright,
-                "reward_upright_positive": r_upright_positive,
-                "reward_height": r_height,
-                "reward_height_target": r_height_target,
-                "reward_contact": r_contact,
-                "reward_feet_air_time": r_feet_air_time,
-                "reward_disk_contact": r_disk_contact,
-                "reward_action": r_action,
-                "reward_action_delta": r_action_delta,
-                "reward_termination": r_termination,
-                "reward_alive": r_alive,
+                **{f"reward_{name}": value for name, value in terms.items()},
                 "forward_velocity": forward_velocity,
+                "lateral_velocity": lateral_velocity,
+                "yaw_rate": yaw_rate,
+                "heading_error": heading_error,
+                "contact_schedule_match": contact_schedule_match,
                 "vertical_velocity": vertical_velocity,
-                "angular_velocity_xy_mean_square": angular_velocity_xy_mean_square,
+                "roll_pitch_rate_mean_square": roll_pitch_rate_mean_square,
                 "joint_velocity_mean_square": joint_velocity_mean_square,
+                "foot_slip_mean_square": foot_slip_mean_square,
                 "torso_height": torso_height,
                 "upright": upright,
-                "done": done,
+                "failed": failed,
+                "timeout": timeout,
+                "height_failed": height_failed,
+                "upright_failed": upright_failed,
                 "foot_contact_count": foot_contact_count,
                 "feet_air_time": jp.sum(feet_air_time),
                 "first_contact_count": jp.sum(first_contact),
@@ -323,36 +392,29 @@ def make_brax_env(
 
         def _empty_metrics(self):
             zero = jp.array(0.0)
-            return {
+            metrics = {
                 "reward": zero,
-                "reward_velocity": zero,
-                "reward_forward": zero,
-                "reward_lateral": zero,
-                "reward_lin_vel_z": zero,
-                "reward_ang_vel_xy": zero,
-                "reward_joint_vel": zero,
-                "reward_upright": zero,
-                "reward_upright_positive": zero,
-                "reward_height": zero,
-                "reward_height_target": zero,
-                "reward_contact": zero,
-                "reward_feet_air_time": zero,
-                "reward_disk_contact": zero,
-                "reward_action": zero,
-                "reward_action_delta": zero,
-                "reward_termination": zero,
-                "reward_alive": zero,
                 "forward_velocity": zero,
+                "lateral_velocity": zero,
+                "yaw_rate": zero,
+                "heading_error": zero,
+                "contact_schedule_match": zero,
                 "vertical_velocity": zero,
-                "angular_velocity_xy_mean_square": zero,
+                "roll_pitch_rate_mean_square": zero,
                 "joint_velocity_mean_square": zero,
+                "foot_slip_mean_square": zero,
                 "torso_height": zero,
                 "upright": zero,
-                "done": zero,
+                "failed": zero,
+                "timeout": zero,
+                "height_failed": zero,
+                "upright_failed": zero,
                 "foot_contact_count": zero,
                 "feet_air_time": zero,
                 "first_contact_count": zero,
                 "disk_contact_count": zero,
             }
+            metrics.update({f"reward_{name}": zero for name in REWARD_TERM_NAMES})
+            return metrics
 
     return DiskRobotWalkBraxEnv()

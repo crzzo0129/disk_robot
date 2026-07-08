@@ -1,0 +1,2 @@
+[console_scripts]
+mjx_train_walk = scripts.mjx_train_walk:main

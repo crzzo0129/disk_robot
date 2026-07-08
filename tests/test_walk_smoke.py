@@ -4,7 +4,7 @@ def test_walk_env_imports_without_loading_mujoco():
     from disk_robot.walk_env import DEFAULT_XML, DiskRobotWalkEnv
 
     assert "mujoco" not in sys.modules
-    assert DEFAULT_XML.name == "disk_quadruped_extreme.xml"
+    assert DEFAULT_XML.name == "disk_quadruped_extreme_train.xml"
     assert DiskRobotWalkEnv.__name__ == "DiskRobotWalkEnv"
 
 

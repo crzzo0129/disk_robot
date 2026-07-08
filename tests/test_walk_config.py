@@ -14,4 +14,5 @@ def test_walk_config_observation_size_matches_declared_layout():
 
     config = WalkTaskConfig()
 
-    assert config.observation_size == 51
+    assert config.observation_frame_size == 60
+    assert config.observation_size == 60 * config.observation_history
