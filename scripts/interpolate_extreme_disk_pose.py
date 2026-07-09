@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme.xml"
-DEFAULT_FROM_KEYFRAME = "stand"
+XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme_train.xml"
+DEFAULT_FROM_KEYFRAME = "walk_stand"
 DEFAULT_TO_KEYFRAME = "folded"
 
 KEY_HELP = """

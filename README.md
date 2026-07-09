@@ -20,6 +20,9 @@ python -m scripts.view_extreme_disk_pose --keyframe stand
 python -m scripts.view_extreme_disk_pose --keyframe folded
 python -m scripts.control_extreme_disk_flex --keyframe folded
 python -m scripts.interpolate_extreme_disk_pose
+python -m scripts.simulate_extreme_disk_pose
+python -m scripts.simulate_extreme_disk_pose --switch-time 0.5 --walk-to-stand-time 2.0 --stand-hold-time 0.5 --stand-to-folded-time 3.0
+python -m scripts.simulate_extreme_disk_pose --headless --steps 1000
 python -m scripts.walk_smoke --steps 100 --policy zero
 python -m scripts.walk_smoke --steps 100 --policy random
 ```

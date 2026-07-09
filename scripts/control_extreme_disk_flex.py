@@ -41,7 +41,7 @@ class CommandQueue:
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keyframe", choices=["stand", "folded"], default="folded")
-    parser.add_argument("--step", type=float, default=0.5, help="Angle delta per key press, in radians.")
+    parser.add_argument("--step", type=float, default=1.0, help="Angle delta per key press, in radians.")
     return parser.parse_args(argv)
 
 

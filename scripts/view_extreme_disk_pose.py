@@ -10,7 +10,7 @@ XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme.xml"
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--keyframe", choices=["stand", "folded"], default="stand")
+    parser.add_argument("--keyframe", choices=["stand", "folded"], default="folded")
     parser.add_argument(
         "--passive",
         action="store_true",
