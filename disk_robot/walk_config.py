@@ -44,8 +44,8 @@ class WalkTaskConfig:
     reward_height_target: float = 0.0
     target_torso_height: float = 0.406
     height_tracking_sigma: float = 0.0025
-    reward_contact: float = 1
-    reward_contact_schedule: float = 1
+    reward_contact: float = 0.6
+    reward_contact_schedule: float = 0.2
     reward_feet_air_time: float = 0.3
     min_feet_air_time: float = 0.2
     penalty_disk_contact: float = 2.0

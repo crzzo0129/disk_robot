@@ -178,8 +178,8 @@ def make_brax_env(
             forward_velocity = jp.dot(world_velocity, torso_x_axis)
             lateral_velocity = jp.dot(world_velocity, torso_y_axis)
             yaw_rate = data.cvel[self.torso_body_id][2]
-            _, heading_sin = self._heading_observation(data)
-            heading_error = heading_sin
+            heading_cos, heading_sin = self._heading_observation(data)
+            heading_error = jp.arctan2(heading_sin, heading_cos)
             vertical_velocity = data.cvel[self.torso_body_id][5]
             roll_pitch_rate_mean_square = jp.mean(jp.square(data.cvel[self.torso_body_id][0:2]))
             joint_velocity_mean_square = jp.mean(jp.square(data.qvel[self.dof_indices]))
@@ -341,7 +341,7 @@ def make_brax_env(
             terms = {
                 "velocity": cfg.reward_velocity * jp.exp(-(velocity_error * velocity_error) / cfg.tracking_sigma),
                 "forward": cfg.reward_forward * forward_velocity,
-                "lateral": -cfg.reward_lateral * lateral_velocity,
+                "lateral": -cfg.reward_lateral * jp.abs( lateral_velocity),
                 "yaw": -cfg.penalty_yaw_rate * yaw_rate * yaw_rate,
                 "heading": -cfg.penalty_heading_error * heading_error * heading_error,
                 "lin_vel_z": -cfg.penalty_lin_vel_z * vertical_velocity * vertical_velocity,
