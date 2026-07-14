@@ -84,3 +84,15 @@ def test_disk_contact_action_rate_and_failure_are_penalties():
     assert unsafe.terms["disk_contact"] < 0.0
     assert unsafe.terms["action_delta"] < 0.0
     assert unsafe.terms["termination"] < 0.0
+
+
+def test_teacher_imitation_reward_prefers_teacher_action():
+    from disk_robot.walk_config import WalkTaskConfig
+    from disk_robot.walk_reward import compute_walk_reward
+
+    config = WalkTaskConfig(reward_teacher_imitation=1.0)
+    matching = compute_walk_reward(config=config, inputs=_reward_inputs(teacher_action_error=0.0))
+    random = compute_walk_reward(config=config, inputs=_reward_inputs(teacher_action_error=1.0))
+
+    assert matching.terms["teacher_imitation"] > random.terms["teacher_imitation"]
+    assert matching.total > random.total

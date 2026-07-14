@@ -89,17 +89,25 @@ r_yaw = exp(-(yaw_rate - command_wz)^2 / sigma_w)
 
 当前代码中 CPU 与 MJX 的 lateral penalty、air-time 项和部分默认 command 不一致，正式训练前必须统一。
 
-### Stage 1：离线示范与行为克隆
+### Stage 1：Teacher 引导与策略模仿
 
-用现有开环 gait、人工轨迹或优化器生成：
+当前已在 `pupper_v3_disk_visual.xml` 上搜索并固化一组 teacher 轨迹。CPU 验证中它连续运行 7 秒、前进约 1.1 m 且没有触发跌倒终止。训练使用动作混合：
 
 ```text
-(hardware_observation, command) -> joint_position_residual
+teacher_action = normalized_teacher_joint_offset
+applied_action = teacher_blend * teacher_action
+               + (1 - teacher_blend) * policy_action
 ```
 
-只训练静态站姿残差策略，不把 gait phase 放入最终 actor。BC 先提供有意义的抬腿、支撑和推进动作，避免 PPO 从“什么都不做”开始搜索。
+actor 仍不接收 gait phase。引导阶段通过 `teacher_imitation` 奖励让 policy 从状态历史和上一动作中复现 teacher，再逐步降低 `teacher_blend`。当前 Brax checkpoint 恢复会迁移观测归一化、policy 和 value 参数，但 optimizer 会重新初始化。
 
-验收门槛：BC 策略在关闭 teacher 的闭环 rollout 中仍能连续前进。
+建议阶段：
+
+1. `teacher_blend=1.0`、imitation `1.0`：学习 teacher 动作。
+2. `teacher_blend=0.5`、imitation `0.3`：策略开始承担真实动力学控制。
+3. `teacher_blend=0.0`、imitation `0.0`：纯策略验收。
+
+验收门槛：第三阶段关闭 teacher 后仍能连续前进。teacher 与当前几何绑定；修改腿长、关节方向或站姿后必须重新运行 teacher 回归验证或重新搜索参数。
 
 ### Stage 2：基础 PPO
 
@@ -162,4 +170,4 @@ r_yaw = exp(-(yaw_rate - command_wz)^2 / sigma_w)
 6. 完成基础前进 PPO，再扩展 command curriculum。
 7. 加入 domain randomization 和 Pupper 平台回放检查。
 
-当前 `walk_smoke.py`、`mjx_train_walk.py` 与 CPU/MJX 环境已经实现静态站姿残差、硬件可用观测、三维 command 和共享奖励。尚未实现的部分是 BC 初始化、optimizer-state 连续 curriculum 与分阶段 domain randomization；它们应在基础 `forward` PPO 通过可学性门槛后继续加入。
+当前 `walk_smoke.py`、`mjx_train_walk.py` 与 CPU/MJX 环境已经实现静态站姿残差、teacher blend 退火、checkpoint 权重恢复、三维 command 和共享奖励。尚未实现的是 optimizer-state 连续恢复、自动按指标切换阶段与分阶段 domain randomization。

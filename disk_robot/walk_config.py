@@ -34,6 +34,10 @@ class WalkTaskConfig:
     command_zero_probability: float = 0.0
     command_resample_steps: int = 100
 
+    teacher_blend: float = 0.0
+    reward_teacher_imitation: float = 0.0
+    teacher_imitation_sigma: float = 0.08
+
     reward_velocity_xy: float = 1.0
     reward_yaw_rate: float = 0.25
     reward_directional_progress: float = 1.0

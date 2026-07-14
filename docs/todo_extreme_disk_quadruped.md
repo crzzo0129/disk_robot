@@ -33,10 +33,11 @@
 
 ## P1：示范初始化
 
-- [ ] 用现有 gait/轨迹工具导出 `(observation, command, residual target)` 数据集。
-- [ ] 保证数据不要求最终 actor 输入 gait phase。
-- [ ] 增加 BC 训练、验证和闭环 rollout 入口。
-- [ ] 验证 BC 模型在 teacher 关闭后仍可持续推进。
+- [x] 在当前 Pupper XML 上搜索并固化稳定前进 teacher。
+- [x] 保证最终 actor 不输入 gait phase。
+- [x] 增加 teacher blend、imitation reward 和 checkpoint 权重恢复入口。
+- [ ] 完成 `1.0 → 0.5 → 0.0` 云端训练，验证关闭 teacher 后仍可持续推进。
+- [ ] 若几何修改使 teacher 回归失败，重新搜索 teacher 参数。
 
 ## P1：PPO 与 Command Curriculum
 

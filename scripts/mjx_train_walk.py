@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -172,6 +173,17 @@ def _copy_path(src: Path, dst: Path):
         shutil.copy2(src, dst)
 
 
+def _resolve_restore_checkpoint(path: Path) -> Path:
+    path = path.expanduser()
+    if not path.is_dir():
+        return path
+    numbered = sorted(
+        (child for child in path.iterdir() if child.is_dir() and child.name.isdigit()),
+        key=lambda child: int(child.name),
+    )
+    return numbered[-1] if numbered else path
+
+
 def _save_params_with_alias(model_io, args, params, step: int, alias: str):
     step_path = args.out / f"params_{alias}_{int(step)}"
     alias_path = args.out / f"params_{alias}"
@@ -272,6 +284,9 @@ def parse_args(argv=None):
     parser.add_argument("--command-resample-steps", type=int, default=None)
     parser.add_argument("--observation-history", type=int, default=None)
     parser.add_argument("--action-scale", type=float, nargs=12, default=None)
+    parser.add_argument("--teacher-blend", type=float, default=0.0)
+    parser.add_argument("--reward-teacher-imitation", type=float, default=0.0)
+    parser.add_argument("--restore-checkpoint", type=Path, default=None)
     parser.add_argument("--min-torso-height", type=float, default=None)
     parser.add_argument("--terminate-upright", type=float, default=None)
     parser.add_argument("--penalty-termination", type=float, default=None)
@@ -344,6 +359,10 @@ def main(argv=None):
         overrides["command_resample_steps"] = args.command_resample_steps
     if args.observation_history is not None:
         overrides["observation_history"] = args.observation_history
+    if not 0.0 <= args.teacher_blend <= 1.0:
+        raise SystemExit("--teacher-blend must be in [0, 1]")
+    overrides["teacher_blend"] = args.teacher_blend
+    overrides["reward_teacher_imitation"] = args.reward_teacher_imitation
     if args.min_torso_height is not None:
         overrides["min_torso_height"] = args.min_torso_height
     if args.terminate_upright is not None:
@@ -363,6 +382,8 @@ def main(argv=None):
         f"zero_p={config.command_zero_probability} "
         f"action_scale={config.action_scale} "
         f"history={config.observation_history} "
+        f"teacher_blend={config.teacher_blend} "
+        f"teacher_reward={config.reward_teacher_imitation} "
         f"min_h={config.min_torso_height} "
         f"term_upright={config.terminate_upright} "
         f"term_penalty={config.penalty_termination} "
@@ -404,6 +425,17 @@ def main(argv=None):
         best_policy["metrics"] = metrics
         _make_progress_fn(wandb_run)(step, metrics)
 
+    checkpoint_kwargs = {}
+    train_parameters = inspect.signature(ppo.train).parameters
+    if "save_checkpoint_path" in train_parameters:
+        checkpoint_kwargs["save_checkpoint_path"] = str(args.out / "ppo_checkpoint")
+    if args.restore_checkpoint is not None:
+        if "restore_checkpoint_path" not in train_parameters:
+            raise SystemExit("Installed Brax does not support restore_checkpoint_path; upgrade Brax.")
+        restore_path = _resolve_restore_checkpoint(args.restore_checkpoint)
+        print(f"restoring PPO weights from {restore_path}", flush=True)
+        checkpoint_kwargs["restore_checkpoint_path"] = str(restore_path)
+
     make_inference_fn, params, metrics = ppo.train(
         environment=env,
         eval_env=eval_env,
@@ -426,6 +458,7 @@ def main(argv=None):
         progress_fn=progress_fn,
         policy_params_fn=policy_params_fn,
         seed=args.seed,
+        **checkpoint_kwargs,
     )
 
     model_io.save_params(args.out / "params", params)

@@ -12,6 +12,7 @@ REWARD_TERM_NAMES = (
     "directional_progress",
     "yaw_rate",
     "stand",
+    "teacher_imitation",
     "lin_vel_z",
     "ang_vel_xy",
     "upright",
@@ -41,6 +42,7 @@ class WalkRewardInputs:
     action_delta_mean_square: float
     foot_slip_mean_square: float = 0.0
     failed: bool = False
+    teacher_action_error: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ def reward_terms(xp, config: WalkTaskConfig, inputs: WalkRewardInputs | dict):
         "directional_progress": config.reward_directional_progress * directional_progress,
         "yaw_rate": config.reward_yaw_rate * xp.exp(-(yaw_error * yaw_error) / config.yaw_tracking_sigma),
         "stand": config.reward_stand * zero_command * xp.exp(-motion_norm_sq / config.stand_tracking_sigma),
+        "teacher_imitation": config.reward_teacher_imitation
+        * xp.exp(-get("teacher_action_error") / config.teacher_imitation_sigma),
         "lin_vel_z": -config.penalty_lin_vel_z * get("vertical_velocity") ** 2,
         "ang_vel_xy": -config.penalty_ang_vel_xy * get("roll_pitch_rate_mean_square"),
         "upright": -config.penalty_upright * xp.maximum(0.0, 1.0 - get("upright")) ** 2,

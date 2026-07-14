@@ -11,6 +11,8 @@ def test_walk_config_declares_pupper_action_and_hardware_observation():
     assert config.observation_history == 4
     assert config.observation_size == 192
     assert not hasattr(config, "use_open_loop_gait")
+    assert config.teacher_blend == 0.0
+    assert config.reward_teacher_imitation == 0.0
 
 
 def test_command_profiles_expand_task_space_without_changing_action_scale():

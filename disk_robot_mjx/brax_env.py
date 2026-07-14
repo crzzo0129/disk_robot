@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from disk_robot.gait import PUPPER_FORWARD_TEACHER, leg_phase_offsets, make_open_loop_targets_jax
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.walk_config import WalkTaskConfig
 from disk_robot.walk_reward import REWARD_TERM_NAMES, reward_terms
@@ -64,6 +65,7 @@ def make_brax_env(
             self.ctrl_low = jp.asarray(self.contract.ctrl_low)
             self.ctrl_high = jp.asarray(self.contract.ctrl_high)
             self.action_scale = jp.asarray(self.config.action_scale)
+            self.teacher_phase_offsets = jp.asarray(leg_phase_offsets(PUPPER_FORWARD_TEACHER.mode))
             if self.action_scale.shape != (self.config.action_size,):
                 raise ValueError(f"action_scale must contain {self.config.action_size} values")
             self.torso_body_id = self.contract.torso_body_id
@@ -130,7 +132,9 @@ def make_brax_env(
             action = jp.clip(action, -1.0, 1.0)
             command_used = state.info["command"]
             old_pos = state.pipeline_state.xpos[self.torso_body_id]
-            target_ctrl = jp.clip(self.stand_q + self.action_scale * action, self.ctrl_low, self.ctrl_high)
+            teacher_action = self._teacher_action(state.info["step_count"])
+            blended_action = self.config.teacher_blend * teacher_action + (1.0 - self.config.teacher_blend) * action
+            target_ctrl = jp.clip(self.stand_q + self.action_scale * blended_action, self.ctrl_low, self.ctrl_high)
             data = state.pipeline_state.replace(
                 ctrl=state.pipeline_state.ctrl.at[self.actuator_ids].set(target_ctrl)
             )
@@ -177,6 +181,7 @@ def make_brax_env(
                 "action_delta_mean_square": jp.mean(jp.square(action_delta)),
                 "foot_slip_mean_square": foot_slip,
                 "failed": failed,
+                "teacher_action_error": jp.mean(jp.square(action - teacher_action)),
             }
             terms = reward_terms(jp, self.config, inputs)
             reward = sum(terms.values())
@@ -220,12 +225,24 @@ def make_brax_env(
                 "foot_slip_mean_square": foot_slip,
                 "action_rms": jp.sqrt(jp.mean(jp.square(action))),
                 "action_rate_rms": jp.sqrt(jp.mean(jp.square(action_delta))),
+                "teacher_action_error": inputs["teacher_action_error"],
                 "failed": failed,
                 "timeout": timeout,
                 "height_failed": height_failed.astype(jp.float32),
                 "upright_failed": upright_failed.astype(jp.float32),
             }
             return State(data, history, reward, done, metrics, info)
+
+        def _teacher_action(self, step_count):
+            dt = self.model.opt.timestep * max(1, self.config.action_repeat)
+            targets = make_open_loop_targets_jax(
+                jp,
+                self.stand_q,
+                step_count * dt,
+                PUPPER_FORWARD_TEACHER,
+                self.teacher_phase_offsets,
+            )
+            return jp.clip((targets - self.stand_q) / self.action_scale, -1.0, 1.0)
 
         def _sample_command(self, rng):
             zero_key, vx_key, vy_key, yaw_key = jax.random.split(rng, 4)
@@ -302,6 +319,7 @@ def make_brax_env(
                 "foot_slip_mean_square",
                 "action_rms",
                 "action_rate_rms",
+                "teacher_action_error",
                 "failed",
                 "timeout",
                 "height_failed",

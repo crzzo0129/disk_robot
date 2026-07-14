@@ -53,3 +53,32 @@ def test_command_is_in_each_observation_frame_and_resamples():
 
     assert np.allclose(first_command, env.obs_history[93:96])
     assert not np.allclose(first_command, next_command)
+
+
+def test_verified_teacher_moves_target_model_forward_without_falling():
+    import numpy as np
+
+    from disk_robot.walk_config import WalkTaskConfig
+    from disk_robot.walk_env import DiskRobotWalkEnv
+
+    config = WalkTaskConfig(
+        action_repeat=5,
+        max_episode_steps=350,
+        reset_joint_noise=0.0,
+        reset_height_noise=0.0,
+        command_vx_min=0.15,
+        command_vx_max=0.15,
+        command_zero_probability=0.0,
+        teacher_blend=1.0,
+    )
+    env = DiskRobotWalkEnv(config=config, seed=0)
+    env.reset()
+    start_x = float(env.data.qpos[0])
+    terminated = False
+    for _ in range(350):
+        _, _, terminated, truncated, _ = env.step(np.zeros(config.action_size))
+        if terminated or truncated:
+            break
+
+    assert not terminated
+    assert float(env.data.qpos[0]) - start_x > 0.8

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
+from disk_robot.gait import PUPPER_FORWARD_TEACHER, make_open_loop_targets
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.walk_config import WalkTaskConfig
 from disk_robot.walk_reward import WalkReward, WalkRewardInputs, compute_walk_reward
@@ -75,7 +76,9 @@ class DiskRobotWalkEnv:
         action = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
         command_used = self.command.copy()
         old_pos = self.data.xpos[c.torso_body_id].copy()
-        target_ctrl = np.clip(c.stand_q + self.action_scale * action, c.ctrl_low, c.ctrl_high)
+        teacher_action = self._teacher_action(self.step_count)
+        blended_action = self.config.teacher_blend * teacher_action + (1.0 - self.config.teacher_blend) * action
+        target_ctrl = np.clip(c.stand_q + self.action_scale * blended_action, c.ctrl_low, c.ctrl_high)
         self.data.ctrl[c.actuator_ids] = target_ctrl
         for _ in range(max(1, self.config.action_repeat)):
             self.mujoco.mj_step(self.model, self.data)
@@ -113,6 +116,7 @@ class DiskRobotWalkEnv:
             action_delta_mean_square=float(np.mean(np.square(action_delta))),
             foot_slip_mean_square=foot_slip,
             failed=bool(terminated),
+            teacher_action_error=float(np.mean(np.square(action - teacher_action))),
         )
         reward = compute_walk_reward(config=self.config, inputs=inputs)
         self.previous_action = action
@@ -124,6 +128,15 @@ class DiskRobotWalkEnv:
             self.command = self._sample_command()
         obs = self._update_obs_history(self._obs_frame())
         return obs, reward.total, bool(terminated), bool(truncated), info
+
+    def _teacher_action(self, step_count):
+        dt = self.model.opt.timestep * max(1, self.config.action_repeat)
+        targets = make_open_loop_targets(
+            self.contract.stand_q,
+            step_count * dt,
+            PUPPER_FORWARD_TEACHER,
+        )
+        return np.clip((targets - self.contract.stand_q) / self.action_scale, -1.0, 1.0)
 
     def _sample_command(self):
         if self.rng.random() < self.config.command_zero_probability:

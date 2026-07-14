@@ -32,16 +32,45 @@ def test_mjx_walk_accepts_omnidirectional_command_ranges():
     assert args.command_yaw == [-1.0, 1.0]
 
 
+def test_mjx_walk_accepts_teacher_fade_and_checkpoint_restore():
+    from scripts.mjx_train_walk import parse_args
+
+    args = parse_args(
+        [
+            "--teacher-blend",
+            "0.5",
+            "--reward-teacher-imitation",
+            "0.3",
+            "--restore-checkpoint",
+            "previous_checkpoint",
+        ]
+    )
+
+    assert args.teacher_blend == 0.5
+    assert args.reward_teacher_imitation == 0.3
+    assert args.restore_checkpoint.name == "previous_checkpoint"
+
+
 def test_mjx_walk_env_uses_shared_reward_and_no_runtime_gait():
     source = open("disk_robot_mjx/brax_env.py", encoding="utf-8").read()
 
     assert "reward_terms(jp" in source
     assert "gait_phase" not in source
-    assert "open_loop" not in source
-    assert "self.stand_q + self.action_scale * action" in source
+    assert "use_open_loop_gait" not in source
+    assert "self.stand_q + self.action_scale * blended_action" in source
 
 
 def test_auto_mujoco_gl_prefers_egl_on_headless_linux():
     from disk_robot_mjx.pipeline import select_mujoco_gl_backend
 
     assert select_mujoco_gl_backend(environ={}, platform_name="linux") == "egl"
+
+
+def test_restore_checkpoint_parent_selects_latest_numbered_child(tmp_path):
+    from scripts.mjx_train_walk import _resolve_restore_checkpoint
+
+    (tmp_path / "000000001000").mkdir()
+    latest = tmp_path / "000000010000"
+    latest.mkdir()
+
+    assert _resolve_restore_checkpoint(tmp_path) == latest

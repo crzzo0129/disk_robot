@@ -25,6 +25,21 @@ class GaitParams:
     march_hip_compensation: float = 0.0
 
 
+PUPPER_FORWARD_TEACHER = GaitParams(
+    frequency=2.383891928333123,
+    hip_stance_amplitude=0.2,
+    hip_swing_amplitude=0.2,
+    knee_lift_amplitude=0.7020209717854253,
+    abd_amplitude=0.14666609098791047,
+    duty=0.6862624524123938,
+    mode="march",
+    direction=1.0,
+    front_knee_sign=1.0,
+    hind_knee_sign=-1.0,
+    march_hip_compensation=-0.2316931633314855,
+)
+
+
 def leg_phase_offsets(mode: str) -> np.ndarray:
     if mode == "trot":
         values = (0.0, 0.5, 0.5, 0.0)
@@ -92,7 +107,7 @@ def make_open_loop_targets_jax(jp, neutral, t, params: GaitParams, phase_offsets
     swing_lift = jp.where(stance, 0.0, jp.sin(jp.pi * swing_u))
     swing_return = jp.where(stance, 0.0, -jp.cos(jp.pi * swing_u))
 
-    side_sign = jp.array([1.0, -1.0, 1.0, -1.0])
+    side_sign = jp.array([-1.0, 1.0, -1.0, 1.0])
     knee_sign = jp.array([
         params.front_knee_sign,
         params.front_knee_sign,
