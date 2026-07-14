@@ -145,6 +145,7 @@ def make_brax_env(
             torso_mat = data.xmat[self.torso_body_id]
             body_velocity = torso_mat.T @ world_velocity
             body_angular_velocity = torso_mat.T @ data.cvel[self.torso_body_id, :3]
+            body_linear_velocity = torso_mat.T @ data.cvel[self.torso_body_id, 3:6]
             upright = torso_mat[2, 2]
             torso_height = data.xpos[self.torso_body_id, 2]
             disk_contact_count = self._disk_contact_count(data)
@@ -241,11 +242,13 @@ def make_brax_env(
         def _obs_frame(self, data, previous_action, command):
             torso_mat = data.xmat[self.torso_body_id]
             body_angular_velocity = torso_mat.T @ data.cvel[self.torso_body_id, :3]
+            body_linear_velocity = torso_mat.T @ data.cvel[self.torso_body_id, 3:6]
             projected_gravity = torso_mat.T @ jp.array([0.0, 0.0, -1.0])
             return jp.concatenate(
                 [
                     body_angular_velocity,
                     projected_gravity,
+                    body_linear_velocity,
                     data.qpos[self.qpos_indices] - self.stand_q,
                     data.qvel[self.dof_indices],
                     previous_action,

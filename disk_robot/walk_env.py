@@ -86,6 +86,7 @@ class DiskRobotWalkEnv:
         torso_mat = self.data.xmat[c.torso_body_id].reshape(3, 3)
         body_velocity = torso_mat.T @ world_velocity
         body_angular_velocity = torso_mat.T @ self.data.cvel[c.torso_body_id, :3]
+        body_linear_velocity = torso_mat.T @ self.data.cvel[c.torso_body_id, 3:6]
         upright = float(torso_mat[2, 2])
         torso_height = float(self.data.xpos[c.torso_body_id, 2])
         disk_contacts = self._disk_contact_count()
@@ -140,11 +141,13 @@ class DiskRobotWalkEnv:
         c = self.contract
         torso_mat = self.data.xmat[c.torso_body_id].reshape(3, 3)
         body_angular_velocity = torso_mat.T @ self.data.cvel[c.torso_body_id, :3]
+        body_linear_velocity = torso_mat.T @ self.data.cvel[c.torso_body_id, 3:6]
         projected_gravity = torso_mat.T @ np.array([0.0, 0.0, -1.0])
         return np.concatenate(
             [
                 body_angular_velocity,
                 projected_gravity,
+                body_linear_velocity,
                 self.data.qpos[c.qpos_indices] - c.stand_q,
                 self.data.qvel[c.dof_indices],
                 self.previous_action,

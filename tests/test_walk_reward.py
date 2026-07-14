@@ -28,8 +28,9 @@ def test_nonzero_command_strongly_prefers_matching_velocity_over_standing():
     matching = compute_walk_reward(config=config, inputs=_reward_inputs())
     standing = compute_walk_reward(config=config, inputs=_reward_inputs(velocity_x=0.0))
 
-    assert matching.total > standing.total + 0.4
+    assert matching.total > standing.total + 0.8
     assert matching.terms["velocity_xy"] > standing.terms["velocity_xy"]
+    assert matching.terms["directional_progress"] > standing.terms["directional_progress"]
 
 
 def test_reward_tracks_lateral_and_yaw_commands_instead_of_fixed_heading():

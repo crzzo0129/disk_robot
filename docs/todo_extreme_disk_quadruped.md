@@ -19,7 +19,8 @@
 - [x] 将动作目标统一为 `a=tanh(policy_logits)`、`q_target=q_stand + action_scale * a`。
 - [x] 移除最终 actor 对 gait phase、teacher target 和预设接触时序的依赖。
 - [x] command 统一为机身坐标系 `[vx, vy, wz]`。
-- [x] actor 观测限制为实机可获得量，历史长度设为 4 帧。
+- [x] actor 使用 IMU、关节、上一动作、command 和机身线速度估计，历史长度设为 4 帧。
+- [ ] 确认 Pupper 实机线速度估计质量；必要时用噪声训练或蒸馏降低依赖。
 
 ## P0：环境正确性
 

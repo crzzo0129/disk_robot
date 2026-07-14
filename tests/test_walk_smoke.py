@@ -19,7 +19,7 @@ def test_target_xml_contract_and_static_pose_residual_action():
     env = DiskRobotWalkEnv(config=config, seed=1)
     obs, info = env.reset()
 
-    assert obs.shape == (180,)
+    assert obs.shape == (192,)
     assert np.allclose(info["target_ctrl"], env.contract.stand_q)
     foot_bottom = (
         env.data.geom_xpos[env.contract.foot_geom_ids, 2] - env.contract.foot_radii
@@ -47,9 +47,9 @@ def test_command_is_in_each_observation_frame_and_resamples():
     config = WalkTaskConfig(command_resample_steps=1, command_zero_probability=0.0, action_repeat=1)
     env = DiskRobotWalkEnv(config=config, seed=4)
     obs, _ = env.reset()
-    first_command = obs[42:45].copy()
+    first_command = obs[45:48].copy()
     next_obs, *_ = env.step(np.zeros(12))
-    next_command = next_obs[42:45]
+    next_command = next_obs[45:48]
 
-    assert np.allclose(first_command, env.obs_history[87:90])
+    assert np.allclose(first_command, env.obs_history[93:96])
     assert not np.allclose(first_command, next_command)

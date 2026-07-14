@@ -9,6 +9,7 @@ from disk_robot.walk_config import WalkTaskConfig
 
 REWARD_TERM_NAMES = (
     "velocity_xy",
+    "directional_progress",
     "yaw_rate",
     "stand",
     "lin_vel_z",
@@ -55,10 +56,20 @@ def reward_terms(xp, config: WalkTaskConfig, inputs: WalkRewardInputs | dict):
     yaw_error = get("yaw_rate") - get("command_yaw")
     command_norm_sq = get("command_x") ** 2 + get("command_y") ** 2 + get("command_yaw") ** 2
     motion_norm_sq = get("velocity_x") ** 2 + get("velocity_y") ** 2 + get("yaw_rate") ** 2
+    command_xy_norm = xp.sqrt(get("command_x") ** 2 + get("command_y") ** 2)
+    directional_velocity = (
+        get("velocity_x") * get("command_x") + get("velocity_y") * get("command_y")
+    ) / xp.maximum(command_xy_norm, 1e-6)
+    directional_progress = xp.where(
+        command_xy_norm > 1e-6,
+        xp.clip(directional_velocity, -0.5, 0.5),
+        0.0,
+    )
     zero_command = xp.where(command_norm_sq < 1e-6, 1.0, 0.0)
     return {
         "velocity_xy": config.reward_velocity_xy
         * xp.exp(-(vx_error * vx_error + vy_error * vy_error) / config.velocity_tracking_sigma),
+        "directional_progress": config.reward_directional_progress * directional_progress,
         "yaw_rate": config.reward_yaw_rate * xp.exp(-(yaw_error * yaw_error) / config.yaw_tracking_sigma),
         "stand": config.reward_stand * zero_command * xp.exp(-motion_norm_sq / config.stand_tracking_sigma),
         "lin_vel_z": -config.penalty_lin_vel_z * get("vertical_velocity") ** 2,

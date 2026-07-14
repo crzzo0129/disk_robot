@@ -41,15 +41,16 @@ q_target = q_stand + action_scale * a
 ```text
 body angular velocity          3
 projected gravity              3
+estimated body velocity        3
 joint position - q_stand      12
 joint velocity                12
 previous action               12
 command [vx, vy, wz]           3
 ```
 
-建议堆叠最近 3 至 5 帧，而不是当前的 20 帧。4 帧时基础输入为 180 维，足以表达短时运动趋势，也显著降低 PPO 开销。
+建议堆叠最近 3 至 5 帧，而不是旧环境的 20 帧。当前使用 4 帧、每帧 48 维，总计 192 维。
 
-若实机没有可靠的机身线速度估计，不要把仿真真值线速度放进 actor。critic 后续可以使用 privileged observation，但 actor 接口保持不变。
+当前 XML 已声明 `global_linvel`，基础学习阶段把机身线速度估计放入 actor，使速度命令成为可观测任务。实机部署必须提供对应状态估计；若实机估计不可靠，应在后续通过观测噪声、速度估计器或 teacher-student 蒸馏移除该依赖，不能直接用不可获得的仿真真值上线。
 
 ### 3.3 Command 采样
 
@@ -103,7 +104,7 @@ r_yaw = exp(-(yaw_rate - command_wz)^2 / sigma_w)
 ### Stage 2：基础 PPO
 
 - 从 BC 权重初始化 PPO。
-- command 先限制为小范围前进，例如 `vx in [0.05, 0.25] m/s`，`vy = wz = 0`。
+- command 先限制为有足够奖励区分度的前进范围；当前使用 `vx in [0.15, 0.30] m/s`，`vy = wz = 0`，且基础阶段不采样零命令。
 - episode 中包含多个非零速度，不只训练单一 `0.1 m/s`。
 - 使用连续采样分布和同一训练 run，不因小阶段重置 optimizer。
 - 若动作长期贴近零，先修奖励差，而不是放大 action scale。
