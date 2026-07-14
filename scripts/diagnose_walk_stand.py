@@ -6,10 +6,11 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from disk_robot.model_contract import FOOT_BODY_NAMES, resolve_model_contract
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_XML = PROJECT_ROOT / "assets" / "disk_quadruped_extreme_train.xml"
-FOOT_GEOMS = ("fl_foot", "fr_foot", "hl_foot", "hr_foot")
+DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
 
 
 def _convex_polygon_area(points: np.ndarray) -> float:
@@ -26,12 +27,13 @@ def _convex_polygon_area(points: np.ndarray) -> float:
 def diagnose(xml_path: Path, keyframe: str) -> None:
     model = mujoco.MjModel.from_xml_path(str(xml_path))
     data = mujoco.MjData(model)
+    contract = resolve_model_contract(model)
     key_id = model.key(keyframe).id
     mujoco.mj_resetDataKeyframe(model, data, key_id)
     mujoco.mj_forward(model, data)
 
-    torso_id = model.body("disk_torso").id
-    foot_ids = [model.geom(name).id for name in FOOT_GEOMS]
+    torso_id = contract.torso_body_id
+    foot_ids = contract.foot_geom_ids
     foot_radius = float(model.geom_size[foot_ids[0], 0])
     torso_xy = data.xpos[torso_id, :2].copy()
     torso_z = float(data.xpos[torso_id, 2])
@@ -52,7 +54,7 @@ def diagnose(xml_path: Path, keyframe: str) -> None:
     print(f"torso_minus_support_center_xy=({offset[0]:.6f}, {offset[1]:.6f}) norm={np.linalg.norm(offset):.6f}")
     print(f"support_polygon_area={support_area:.6f}")
     print("feet:")
-    for name, pos in zip(FOOT_GEOMS, foot_pos):
+    for name, pos in zip(FOOT_BODY_NAMES, foot_pos):
         clearance = float(pos[2] - foot_radius)
         print(
             f"  {name}: x={pos[0]:.6f} y={pos[1]:.6f} z={pos[2]:.6f} "
@@ -66,8 +68,8 @@ def diagnose(xml_path: Path, keyframe: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Diagnose walk_stand support center and foot clearances.")
+    parser = argparse.ArgumentParser(description="Diagnose Pupper stand support center and foot clearances.")
     parser.add_argument("--xml-path", type=Path, default=DEFAULT_XML)
-    parser.add_argument("--keyframe", default="walk_stand")
+    parser.add_argument("--keyframe", default="stand")
     args = parser.parse_args()
     diagnose(args.xml_path, args.keyframe)

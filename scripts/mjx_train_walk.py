@@ -5,7 +5,7 @@ import shutil
 from dataclasses import replace
 from pathlib import Path
 
-from disk_robot.walk_config import WalkTaskConfig
+from disk_robot.walk_config import WalkTaskConfig, command_profile
 from disk_robot.walk_reward import REWARD_TERM_NAMES
 from disk_robot_mjx.brax_env import TRAIN_XML_PATH
 from disk_robot_mjx.pipeline import configure_cloud_runtime, hidden_layers_tuple, make_network_factory
@@ -33,10 +33,19 @@ def _add_average_eval_metrics(logged):
     episode_length = logged.get("eval/avg_episode_length")
     if episode_length is None or episode_length <= 0:
         return
-    if "eval/episode_forward_velocity" in logged:
-        logged["eval/avg_forward_velocity"] = logged["eval/episode_forward_velocity"] / episode_length
-    if "eval/episode_torso_height" in logged:
-        logged["eval/avg_torso_height"] = logged["eval/episode_torso_height"] / episode_length
+    for name in (
+        "velocity_x",
+        "velocity_y",
+        "yaw_rate",
+        "velocity_error_xy",
+        "yaw_rate_error",
+        "torso_height",
+        "action_rms",
+        "action_rate_rms",
+    ):
+        key = f"eval/episode_{name}"
+        if key in logged:
+            logged[f"eval/avg_{name}"] = logged[key] / episode_length
 
 
 def _print_eval_report(step, logged):
@@ -49,7 +58,8 @@ def _print_eval_report(step, logged):
     episode_reward = logged.get("eval/episode_reward", sum(value for _, value in terms))
     term_sum = sum(value for _, value in terms)
     abs_sum = sum(abs(value) for _, value in terms)
-    avg_forward_velocity = logged.get("eval/avg_forward_velocity", float("nan"))
+    avg_velocity_error = logged.get("eval/avg_velocity_error_xy", float("nan"))
+    avg_yaw_error = logged.get("eval/avg_yaw_rate_error", float("nan"))
     avg_torso_height = logged.get("eval/avg_torso_height", float("nan"))
     failed = logged.get("eval/episode_failed", float("nan"))
     height_failed = logged.get("eval/episode_height_failed", float("nan"))
@@ -63,7 +73,8 @@ def _print_eval_report(step, logged):
         f"EVAL step={int(step):,} | "
         f"reward={episode_reward:.3f} | "
         f"len={episode_length:.1f} | "
-        f"avg_fwd={avg_forward_velocity:.4f} | "
+        f"vel_rmse={avg_velocity_error:.4f} | "
+        f"yaw_err={avg_yaw_error:.4f} | "
         f"avg_h={avg_torso_height:.4f} | "
         f"fail={failed:.3f} | "
         f"h_fail={height_failed:.3f} | "
@@ -104,33 +115,29 @@ def _make_progress_fn(wandb_run=None):
     return progress
 
 
-def _best_policy_score(metrics, config, mode="straight"):
+def _best_policy_score(metrics, config, mode="tracking"):
+    del config
     logged = {}
     for key, value in metrics.items():
         scalar = _metric_value(value)
         if scalar is not None:
             logged[key] = scalar
     _add_average_eval_metrics(logged)
-    forward = logged.get("eval/avg_forward_velocity")
     episode_length = logged.get("eval/avg_episode_length")
-    if forward is None or episode_length is None:
+    velocity_error = logged.get("eval/avg_velocity_error_xy")
+    yaw_error = logged.get("eval/avg_yaw_rate_error")
+    if episode_length is None:
         return None, logged
-    if mode == "forward_length":
-        return forward + 0.002 * episode_length, logged
+    if mode == "survival":
+        return episode_length, logged
     if mode == "reward_per_step":
         reward = logged.get("eval/episode_reward")
         if reward is None or episode_length <= 0:
             return None, logged
         return reward / episode_length, logged
-    if episode_length <= 0:
+    if episode_length <= 0 or velocity_error is None or yaw_error is None:
         return None, logged
-    tracking_error = abs(forward - config.command_velocity)
-    straight_terms = (
-        logged.get("eval/episode_reward_lateral", 0.0)
-        + logged.get("eval/episode_reward_yaw", 0.0)
-        + logged.get("eval/episode_reward_heading", 0.0)
-    ) / episode_length
-    return -tracking_error + straight_terms + 0.0005 * episode_length, logged
+    return -velocity_error - 0.5 * yaw_error + 0.0005 * episode_length, logged
 
 
 def _init_wandb(args):
@@ -241,7 +248,7 @@ def _render_policy_video(args, make_inference_fn, params, config, name="final_po
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Cloud MJX/Brax PPO training entrypoint for disk robot walking.")
+    parser = argparse.ArgumentParser(description="Gait-free command-conditioned MJX PPO training for disk robot.")
     parser.add_argument("--steps", type=int, default=10_000)
     parser.add_argument("--envs", type=int, default=128)
     parser.add_argument("--episode-length", type=int, default=128)
@@ -253,28 +260,22 @@ def parse_args(argv=None):
     parser.add_argument("--num-updates-per-batch", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--entropy-cost", type=float, default=1e-2)
-    parser.add_argument("--discounting", type=float, default=0.97)
+    parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--reward-scaling", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--settle-steps", type=int, default=0)
-    parser.add_argument("--command-velocity", type=float, default=0.1)
-    parser.add_argument("--action-scale", type=float, default=None)
+    parser.add_argument("--command-profile", choices=["forward", "omni", "full"], default="forward")
+    parser.add_argument("--command-vx", type=float, nargs=2, metavar=("MIN", "MAX"), default=None)
+    parser.add_argument("--command-vy", type=float, nargs=2, metavar=("MIN", "MAX"), default=None)
+    parser.add_argument("--command-yaw", type=float, nargs=2, metavar=("MIN", "MAX"), default=None)
+    parser.add_argument("--command-zero-probability", type=float, default=None)
+    parser.add_argument("--command-resample-steps", type=int, default=None)
+    parser.add_argument("--observation-history", type=int, default=None)
+    parser.add_argument("--action-scale", type=float, nargs=12, default=None)
     parser.add_argument("--min-torso-height", type=float, default=None)
     parser.add_argument("--terminate-upright", type=float, default=None)
     parser.add_argument("--penalty-termination", type=float, default=None)
-    parser.add_argument("--reward-alive", type=float, default=None)
-    parser.add_argument("--reward-upright-positive", type=float, default=None)
-    parser.add_argument("--penalty-yaw-rate", type=float, default=None)
-    parser.add_argument("--penalty-heading-error", type=float, default=None)
-    parser.add_argument("--penalty-ang-vel-xy", type=float, default=None)
-    parser.add_argument("--reward-lateral", type=float, default=None)
-    parser.add_argument("--reward-velocity", type=float, default=None)
-    parser.add_argument("--reward-forward", type=float, default=None)
-    parser.add_argument("--tracking-sigma", type=float, default=None)
-    parser.add_argument("--residual-action-scale", type=float, default=None)
-    parser.add_argument("--use-open-loop-gait", action="store_true", default=None)
-    parser.add_argument("--no-open-loop-gait", dest="use_open_loop_gait", action="store_false")
-    parser.add_argument("--best-score-mode", default="straight", choices=["straight", "reward_per_step", "forward_length"])
+    parser.add_argument("--best-score-mode", default="tracking", choices=["tracking", "reward_per_step", "survival"])
     parser.add_argument("--max-episode-steps", type=int, default=None)
     parser.add_argument("--out", type=Path, default=Path("mjx_runs") / "walk_smoke")
     parser.add_argument("--xml-path", type=Path, default=TRAIN_XML_PATH)
@@ -296,7 +297,7 @@ def parse_args(argv=None):
     parser.add_argument("--video-steps", type=int, default=750)
     parser.add_argument("--video-fps", type=int, default=50)
     parser.add_argument("--video-camera", default="tracking", help="Fixed camera name, or 'tracking' for a body-following camera.")
-    parser.add_argument("--video-track-body", default="disk_torso")
+    parser.add_argument("--video-track-body", default="base_link")
     parser.add_argument("--video-distance", type=float, default=1.8)
     parser.add_argument("--video-azimuth", type=float, default=90.0)
     parser.add_argument("--video-elevation", type=float, default=-20.0)
@@ -327,60 +328,44 @@ def main(argv=None):
         ) from exc
 
     wandb_run = _init_wandb(args)
-    config = WalkTaskConfig(command_velocity=args.command_velocity)
+    config = command_profile(args.command_profile)
     overrides = {}
     if args.action_scale is not None:
-        overrides["action_scale"] = args.action_scale
+        overrides["action_scale"] = tuple(args.action_scale)
+    if args.command_vx is not None:
+        overrides.update(command_vx_min=args.command_vx[0], command_vx_max=args.command_vx[1])
+    if args.command_vy is not None:
+        overrides.update(command_vy_min=args.command_vy[0], command_vy_max=args.command_vy[1])
+    if args.command_yaw is not None:
+        overrides.update(command_yaw_min=args.command_yaw[0], command_yaw_max=args.command_yaw[1])
+    if args.command_zero_probability is not None:
+        overrides["command_zero_probability"] = args.command_zero_probability
+    if args.command_resample_steps is not None:
+        overrides["command_resample_steps"] = args.command_resample_steps
+    if args.observation_history is not None:
+        overrides["observation_history"] = args.observation_history
     if args.min_torso_height is not None:
         overrides["min_torso_height"] = args.min_torso_height
     if args.terminate_upright is not None:
         overrides["terminate_upright"] = args.terminate_upright
     if args.penalty_termination is not None:
         overrides["penalty_termination"] = args.penalty_termination
-    if args.reward_alive is not None:
-        overrides["reward_alive"] = args.reward_alive
-    if args.reward_upright_positive is not None:
-        overrides["reward_upright_positive"] = args.reward_upright_positive
-    if args.penalty_yaw_rate is not None:
-        overrides["penalty_yaw_rate"] = args.penalty_yaw_rate
-    if args.penalty_heading_error is not None:
-        overrides["penalty_heading_error"] = args.penalty_heading_error
-    if args.penalty_ang_vel_xy is not None:
-        overrides["penalty_ang_vel_xy"] = args.penalty_ang_vel_xy
-    if args.reward_lateral is not None:
-        overrides["reward_lateral"] = args.reward_lateral
-    if args.reward_velocity is not None:
-        overrides["reward_velocity"] = args.reward_velocity
-    if args.reward_forward is not None:
-        overrides["reward_forward"] = args.reward_forward
-    if args.tracking_sigma is not None:
-        overrides["tracking_sigma"] = args.tracking_sigma
-    if args.residual_action_scale is not None:
-        overrides["residual_action_scale"] = args.residual_action_scale
-    if args.use_open_loop_gait is not None:
-        overrides["use_open_loop_gait"] = args.use_open_loop_gait
     if args.max_episode_steps is not None:
         overrides["max_episode_steps"] = args.max_episode_steps
     if overrides:
         config = replace(config, **overrides)
     print(
         "training config: "
-        f"cmd_vel={config.command_velocity} "
-        f"reward_velocity={config.reward_velocity} "
-        f"reward_forward={config.reward_forward} "
-        f"tracking_sigma={config.tracking_sigma} "
-        f"lateral={config.reward_lateral} "
-        f"yaw={config.penalty_yaw_rate} "
-        f"heading={config.penalty_heading_error} "
-        f"ang_xy={config.penalty_ang_vel_xy} "
-        f"open_loop={config.use_open_loop_gait} "
+        f"profile={args.command_profile} "
+        f"vx=[{config.command_vx_min},{config.command_vx_max}] "
+        f"vy=[{config.command_vy_min},{config.command_vy_max}] "
+        f"yaw=[{config.command_yaw_min},{config.command_yaw_max}] "
+        f"zero_p={config.command_zero_probability} "
         f"action_scale={config.action_scale} "
-        f"residual_scale={config.residual_action_scale} "
+        f"history={config.observation_history} "
         f"min_h={config.min_torso_height} "
         f"term_upright={config.terminate_upright} "
         f"term_penalty={config.penalty_termination} "
-        f"alive={config.reward_alive} "
-        f"upright_pos={config.reward_upright_positive} "
         f"best={args.best_score_mode} "
         f"max_steps={config.max_episode_steps}",
         flush=True,
@@ -410,7 +395,7 @@ def main(argv=None):
                 "new best: "
                 f"step={int(step):,} "
                 f"score={score:.3f} "
-                f"avg_fwd={logged.get('eval/avg_forward_velocity', float('nan')):.4f} "
+                f"vel_err={logged.get('eval/avg_velocity_error_xy', float('nan')):.4f} "
                 f"len={logged.get('eval/avg_episode_length', float('nan')):.1f}",
                 flush=True,
             )
@@ -442,6 +427,7 @@ def main(argv=None):
         policy_params_fn=policy_params_fn,
         seed=args.seed,
     )
+
     model_io.save_params(args.out / "params", params)
     _copy_path(args.out / "params", args.out / "params_final")
     print("training done: final params saved", flush=True)

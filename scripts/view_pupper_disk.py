@@ -10,7 +10,7 @@ XML_PATH = REPO_ROOT / "assets" / "pupper_v3_disk_visual.xml"
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--keyframe", choices=["home", "stand"], default="stand")
+    parser.add_argument("--keyframe", choices=["home", "stand", "folded"], default="folded")
     parser.add_argument(
         "--passive",
         action="store_true",

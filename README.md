@@ -7,7 +7,7 @@ MuJoCo model and phase-1 tools for an extreme disk-body quadruped. The robot kee
 - `assets/`: MJCF/XML model assets
 - `scripts/`: viewer, keyboard control, pose interpolation, and diagnostics
 - `tests/`: lightweight regression tests for the phase-1 model and tools
-- `docs/`: design notes, TODOs, and phase handoff records
+- `docs/`: current training specification, design notes, commands, and TODOs
 
 ## Quick Start
 
@@ -38,16 +38,21 @@ The XML keeps 12 independent position actuators. Paired front/rear flex control 
 
 - `stand` first frame has four foot-ground contacts, but the foot spheres start with penetration into the floor contact.
 - `folded` first frame places the disk torso on the ground and folds the feet upward, with foot-torso internal contacts to watch during later collision design.
-- Before walking training, see `docs/todo_extreme_disk_quadruped.md` and `docs/design_extreme_disk_quadruped.md`.
+- Before walking training, start from `docs/README.md` and
+  `docs/omnidirectional_training_pipeline.md`.
 
-## Stage 2 Walk Training
+## Walk Training Status
 
-Local work is limited to smoke tests. Cloud training starts from:
+The current scripts are suitable for environment and MJX smoke tests:
 
 ```bash
 python -m pip install -r requirements-mjx.txt
-python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128
+python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128 --command-profile forward
 ```
 
-The first cloud run should be treated as an MJX compilation and task-metric smoke test before longer PPO runs.
+This short run checks MJX compilation and metrics only. The controller is a
+command-conditioned static-pose residual policy; runtime open-loop gait is not part
+of the design. After the forward profile learns reliable tracking, continue with
+`--command-profile omni`, then `--command-profile full`.
+
 The default MuJoCo GL backend for cloud training is `egl`; use `--mujoco-gl osmesa` only on machines with a working OSMesa stack.

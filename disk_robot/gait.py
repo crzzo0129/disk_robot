@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 
-LEG_ORDER = ("fl", "fr", "hl", "hr")
+LEG_ORDER = ("front_r", "front_l", "back_r", "back_l")
 LEG_SLICES = {leg: slice(index * 3, index * 3 + 3) for index, leg in enumerate(LEG_ORDER)}
 
 
@@ -70,8 +70,8 @@ def make_open_loop_targets(neutral: np.ndarray, t: float, params: GaitParams) ->
     for leg_index, leg in enumerate(LEG_ORDER):
         stance_push, swing_lift, swing_return = _phase_components(t * params.frequency + offsets[leg_index], params.duty)
         leg_slice = LEG_SLICES[leg]
-        side_sign = 1.0 if leg in ("fl", "hl") else -1.0
-        knee_sign = params.front_knee_sign if leg in ("fl", "fr") else params.hind_knee_sign
+        side_sign = 1.0 if leg.endswith("_l") else -1.0
+        knee_sign = params.front_knee_sign if leg.startswith("front") else params.hind_knee_sign
         targets[leg_slice.start + 0] += side_sign * params.abd_amplitude * stance_push
         if params.mode == "march":
             targets[leg_slice.start + 1] += params.march_hip_compensation * swing_lift

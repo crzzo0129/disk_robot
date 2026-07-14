@@ -1,5 +1,8 @@
 # 极端圆盘躯干四足机器人设计文档
 
+> 本文只负责机械结构与 MJCF 建模背景。当前行走控制和训练决策以
+> [omnidirectional_training_pipeline.md](omnidirectional_training_pipeline.md) 为准；旧的 open-loop gait 假设不再构成训练约束。
+
 ## 目标
 
 本项目研究一种可以在“正常四足行走”和“收腿后滚动”之间切换的四足机器人。当前确定的第一版形态不是球形机器人，也不是独立轮胎式身体，而是一个正常四足布局的机器人：从侧面看，躯干接近一个圆；从前面看，躯干仍然是较窄的厚度。腿部连接点位于圆形躯干偏下侧，保留前腿和后腿的基本四足布局。
@@ -84,9 +87,9 @@
 
 ## 下一步
 
-1. 打开 `scripts.view_extreme_disk_pose --keyframe stand` 和 `--keyframe folded`，人工检查姿态。
-2. 如果 keyframe 姿态合理，再为该模型建立独立的 MJX smoke environment。
-3. 在 smoke environment 通过后，再开始阶段 2 的行走任务设计。
+1. 修正 `stand` 初始足端穿透和 `folded` 内部碰撞，保持 keyframe 可重复加载。
+2. 按 [omnidirectional_training_pipeline.md](omnidirectional_training_pipeline.md) 固化静态站姿残差动作契约。
+3. 先完成 CPU/MJX 一致性和 Stage 0 测试，再进行 BC 与 PPO 长训练。
 
 ## 当前验证状态
 

@@ -2,18 +2,17 @@ def _reward_inputs(**overrides):
     from disk_robot.walk_reward import WalkRewardInputs
 
     values = dict(
-        forward_velocity=0.1,
-        lateral_velocity=0.0,
+        velocity_x=0.2,
+        velocity_y=0.0,
         yaw_rate=0.0,
-        heading_error=0.0,
+        command_x=0.2,
+        command_y=0.0,
+        command_yaw=0.0,
         vertical_velocity=0.0,
         roll_pitch_rate_mean_square=0.0,
         joint_velocity_mean_square=0.0,
-        torso_height=0.406,
         upright=1.0,
         disk_contact_count=0,
-        foot_contact_count=2,
-        contact_schedule_match=1.0,
         action_mean_square=0.0,
         action_delta_mean_square=0.0,
     )
@@ -21,72 +20,66 @@ def _reward_inputs(**overrides):
     return WalkRewardInputs(**values)
 
 
-def test_walk_reward_prefers_matching_forward_velocity():
-    from disk_robot.walk_config import WalkTaskConfig
-    from disk_robot.walk_reward import compute_walk_reward
-
-    config = WalkTaskConfig(command_velocity=0.45)
-    good = compute_walk_reward(config=config, inputs=_reward_inputs(forward_velocity=0.45, action_mean_square=0.01, action_delta_mean_square=0.01))
-    slow = compute_walk_reward(config=config, inputs=_reward_inputs(forward_velocity=0.0, action_mean_square=0.01, action_delta_mean_square=0.01))
-
-    assert good.total > slow.total
-    assert "velocity" in good.terms
-    assert "forward" in good.terms
-
-
-def test_walk_reward_penalizes_disk_ground_contact():
+def test_nonzero_command_strongly_prefers_matching_velocity_over_standing():
     from disk_robot.walk_config import WalkTaskConfig
     from disk_robot.walk_reward import compute_walk_reward
 
     config = WalkTaskConfig()
-    clean = compute_walk_reward(config=config, inputs=_reward_inputs(forward_velocity=config.command_velocity))
-    touching = compute_walk_reward(
-        config=config,
-        inputs=_reward_inputs(forward_velocity=config.command_velocity, disk_contact_count=1),
-    )
+    matching = compute_walk_reward(config=config, inputs=_reward_inputs())
+    standing = compute_walk_reward(config=config, inputs=_reward_inputs(velocity_x=0.0))
 
-    assert clean.total > touching.total
-    assert touching.terms["disk_contact"] < 0.0
+    assert matching.total > standing.total + 0.4
+    assert matching.terms["velocity_xy"] > standing.terms["velocity_xy"]
 
 
-def test_walk_reward_rewards_contact_schedule_match():
+def test_reward_tracks_lateral_and_yaw_commands_instead_of_fixed_heading():
     from disk_robot.walk_config import WalkTaskConfig
     from disk_robot.walk_reward import compute_walk_reward
 
-    config = WalkTaskConfig(reward_contact_schedule=0.2)
-    matching = compute_walk_reward(config=config, inputs=_reward_inputs(forward_velocity=config.command_velocity))
-    mismatching = compute_walk_reward(
+    config = WalkTaskConfig()
+    matching = compute_walk_reward(
         config=config,
-        inputs=_reward_inputs(forward_velocity=config.command_velocity, contact_schedule_match=0.0),
+        inputs=_reward_inputs(velocity_y=-0.15, yaw_rate=0.7, command_y=-0.15, command_yaw=0.7),
+    )
+    wrong = compute_walk_reward(
+        config=config,
+        inputs=_reward_inputs(velocity_y=0.15, yaw_rate=-0.7, command_y=-0.15, command_yaw=0.7),
     )
 
-    assert matching.total > mismatching.total
-    assert matching.terms["contact_schedule"] > mismatching.terms["contact_schedule"]
+    assert matching.total > wrong.total
+    assert "heading" not in matching.terms
 
 
-def test_walk_reward_penalizes_foot_slip():
+def test_zero_command_stand_bonus_only_applies_at_zero_command():
     from disk_robot.walk_config import WalkTaskConfig
     from disk_robot.walk_reward import compute_walk_reward
 
-    config = WalkTaskConfig(penalty_foot_slip=0.1)
-    clean = compute_walk_reward(config=config, inputs=_reward_inputs(forward_velocity=config.command_velocity))
-    slipping = compute_walk_reward(
+    config = WalkTaskConfig()
+    zero = compute_walk_reward(
         config=config,
-        inputs=_reward_inputs(forward_velocity=config.command_velocity, foot_slip_mean_square=1.0),
+        inputs=_reward_inputs(velocity_x=0.0, command_x=0.0),
+    )
+    moving_command = compute_walk_reward(
+        config=config,
+        inputs=_reward_inputs(velocity_x=0.0, command_x=0.1),
     )
 
-    assert clean.total > slipping.total
-    assert slipping.terms["foot_slip"] < 0.0
+    assert zero.terms["stand"] > 0.0
+    assert moving_command.terms["stand"] == 0.0
 
 
-def test_timeout_is_not_a_failure_penalty():
+def test_disk_contact_action_rate_and_failure_are_penalties():
     from disk_robot.walk_config import WalkTaskConfig
     from disk_robot.walk_reward import compute_walk_reward
 
-    config = WalkTaskConfig(penalty_termination=1000.0)
-    survived = compute_walk_reward(config=config, inputs=_reward_inputs(failed=False))
-    failed = compute_walk_reward(config=config, inputs=_reward_inputs(failed=True))
+    config = WalkTaskConfig()
+    clean = compute_walk_reward(config=config, inputs=_reward_inputs())
+    unsafe = compute_walk_reward(
+        config=config,
+        inputs=_reward_inputs(disk_contact_count=1, action_delta_mean_square=1.0, failed=True),
+    )
 
-    assert survived.terms["termination"] == 0.0
-    assert failed.terms["termination"] == -1000.0
-    assert survived.total > failed.total
+    assert clean.total > unsafe.total
+    assert unsafe.terms["disk_contact"] < 0.0
+    assert unsafe.terms["action_delta"] < 0.0
+    assert unsafe.terms["termination"] < 0.0

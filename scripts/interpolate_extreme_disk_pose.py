@@ -1,4 +1,4 @@
-"""Play a smooth interpolation between two keyframes of the extreme disk model."""
+"""Play a smooth interpolation between two robot keyframes."""
 import argparse
 import threading
 import time
@@ -7,7 +7,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme_train.xml"
-DEFAULT_FROM_KEYFRAME = "walk_stand"
+PUPPER_XML_PATH = REPO_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+DEFAULT_FROM_KEYFRAME = "stand"
 DEFAULT_TO_KEYFRAME = "folded"
 
 KEY_HELP = """
@@ -39,11 +40,25 @@ class PlaybackState:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--from-keyframe", default=DEFAULT_FROM_KEYFRAME)
-    parser.add_argument("--to-keyframe", default=DEFAULT_TO_KEYFRAME)
+    parser.add_argument("--model", choices=("disk", "pupper"), default="disk")
+    parser.add_argument("--xml-path", type=Path)
+    parser.add_argument("--track-body")
+    parser.add_argument("--from-keyframe")
+    parser.add_argument("--to-keyframe")
     parser.add_argument("--period", type=float, default=4.0, help="Seconds for stand -> folded -> stand.")
     parser.add_argument("--speed", type=float, default=1.0)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    if args.model == "pupper":
+        args.xml_path = args.xml_path or PUPPER_XML_PATH
+        args.track_body = args.track_body or "base_link"
+        args.from_keyframe = args.from_keyframe or "home"
+    else:
+        args.xml_path = args.xml_path or XML_PATH
+        args.track_body = args.track_body or "disk_torso"
+        args.from_keyframe = args.from_keyframe or DEFAULT_FROM_KEYFRAME
+    args.to_keyframe = args.to_keyframe or DEFAULT_TO_KEYFRAME
+    return args
 
 
 def lerp_sequence(start, end, alpha):
@@ -76,7 +91,7 @@ def main(argv=None):
     import mujoco
     from mujoco import viewer
 
-    model = mujoco.MjModel.from_xml_path(str(XML_PATH))
+    model = mujoco.MjModel.from_xml_path(str(args.xml_path.resolve()))
     data = mujoco.MjData(model)
     from_id = _keyframe_id(mujoco, model, args.from_keyframe)
     to_id = _keyframe_id(mujoco, model, args.to_keyframe)
@@ -119,7 +134,10 @@ def main(argv=None):
             print(f"speed={state.speed:.3f}", flush=True)
 
     apply_interpolated_pose(0.0)
-    torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "disk_torso")
+    torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, args.track_body)
+    if torso_id < 0:
+        raise ValueError(f"Tracking body not found: {args.track_body}")
+    print(f"model={args.xml_path.resolve()}", flush=True)
     print(f"interpolating {args.from_keyframe} <-> {args.to_keyframe}", flush=True)
     print(KEY_HELP.strip(), flush=True)
 

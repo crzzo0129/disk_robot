@@ -4,26 +4,52 @@ def test_walk_env_imports_without_loading_mujoco():
     from disk_robot.walk_env import DEFAULT_XML, DiskRobotWalkEnv
 
     assert "mujoco" not in sys.modules
-    assert DEFAULT_XML.name == "disk_quadruped_extreme_train.xml"
+    assert DEFAULT_XML.name == "pupper_v3_disk_visual.xml"
     assert DiskRobotWalkEnv.__name__ == "DiskRobotWalkEnv"
 
 
-def test_walk_env_reset_and_step_smoke():
+def test_target_xml_contract_and_static_pose_residual_action():
+    import numpy as np
+    import pytest
+
+    from disk_robot.walk_config import WalkTaskConfig
+    from disk_robot.walk_env import DiskRobotWalkEnv
+
+    config = WalkTaskConfig(action_repeat=1, command_zero_probability=1.0)
+    env = DiskRobotWalkEnv(config=config, seed=1)
+    obs, info = env.reset()
+
+    assert obs.shape == (180,)
+    assert np.allclose(info["target_ctrl"], env.contract.stand_q)
+    foot_bottom = (
+        env.data.geom_xpos[env.contract.foot_geom_ids, 2] - env.contract.foot_radii
+    )
+    assert np.min(foot_bottom) == pytest.approx(config.reset_foot_clearance, abs=1e-6)
+    action = np.ones(config.action_size)
+    _, reward, terminated, truncated, info = env.step(action)
+    expected = np.clip(
+        env.contract.stand_q + np.asarray(config.action_scale) * action,
+        env.contract.ctrl_low,
+        env.contract.ctrl_high,
+    )
+    assert np.allclose(info["target_ctrl"], expected)
+    assert isinstance(float(reward), float)
+    assert terminated in (False, True)
+    assert truncated in (False, True)
+
+
+def test_command_is_in_each_observation_frame_and_resamples():
     import numpy as np
 
     from disk_robot.walk_config import WalkTaskConfig
     from disk_robot.walk_env import DiskRobotWalkEnv
 
-    config = WalkTaskConfig(action_repeat=2)
-    env = DiskRobotWalkEnv(config=config, seed=1)
+    config = WalkTaskConfig(command_resample_steps=1, command_zero_probability=0.0, action_repeat=1)
+    env = DiskRobotWalkEnv(config=config, seed=4)
+    obs, _ = env.reset()
+    first_command = obs[42:45].copy()
+    next_obs, *_ = env.step(np.zeros(12))
+    next_command = next_obs[42:45]
 
-    obs, info = env.reset()
-    assert obs.shape == (config.observation_size,)
-    assert info["torso_height"] > 0.0
-
-    obs, reward, terminated, truncated, info = env.step(np.zeros(config.action_size))
-    assert obs.shape == (config.observation_size,)
-    assert isinstance(float(reward), float)
-    assert terminated in (False, True)
-    assert truncated in (False, True)
-    assert "foot_contact_count" in info
+    assert np.allclose(first_command, env.obs_history[87:90])
+    assert not np.allclose(first_command, next_command)

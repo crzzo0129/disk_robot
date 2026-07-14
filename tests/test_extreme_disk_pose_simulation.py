@@ -1,4 +1,5 @@
 import sys
+import xml.etree.ElementTree as ET
 
 
 def test_pose_simulation_imports_without_loading_mujoco():
@@ -70,8 +71,83 @@ def test_step_target_smoothly_transitions_after_delay():
     assert step_target_alpha(10.0, switch_time=0.5, transition_time=2.0) == 1.0
 
 
+def test_rear_push_roll_target_folds_before_pushing():
+    from scripts.simulate_extreme_disk_pose import rear_push_roll_target
+
+    target = lambda sim_time: rear_push_roll_target(sim_time, 0.5, 0.2, 0.4, 0.2, 0.1, 0.25, 0.4)
+
+    assert target(0.5) == ("front_fold", 0.0)
+    assert target(0.6)[0] == "front_fold"
+    assert abs(target(0.6)[1] - 0.5) < 1e-12
+    assert target(0.9)[0] == "rear_fold"
+    assert abs(target(0.9)[1] - 0.5) < 1e-12
+    assert target(1.2) == ("folded_hold", 0.0)
+    assert target(1.35)[0] == "folded_to_push"
+    assert target(1.5) == ("push_hold", 0.0)
+    assert target(1.8)[0] == "push_to_folded"
+    assert target(2.1) == ("rolling", 1.0)
+
+
 def test_zero_transition_time_keeps_instant_switch_available():
     from scripts.simulate_extreme_disk_pose import step_target_alpha
 
     assert step_target_alpha(0.49, switch_time=0.5, transition_time=0.0) == 0.0
     assert step_target_alpha(0.5, switch_time=0.5, transition_time=0.0) == 1.0
+
+
+def test_pupper_preset_selects_home_and_pupper_geometry():
+    from scripts import simulate_extreme_disk_pose
+
+    args = simulate_extreme_disk_pose.parse_args(["--model", "pupper"])
+
+    assert args.xml_path == simulate_extreme_disk_pose.PUPPER_XML_PATH
+    assert args.from_keyframe == "home"
+    assert args.middle_keyframe == "home"
+    assert args.to_keyframe == "folded"
+    assert args.track_body == "base_link"
+    assert args.disk_geom == "base_disk_collision"
+    assert args.walk_to_stand_time == 0.0
+
+
+def test_rear_push_roll_preset_selects_motion_and_runtime_strength():
+    from scripts import simulate_extreme_disk_pose
+
+    args = simulate_extreme_disk_pose.parse_args(["--motion", "rear-push-roll"])
+
+    assert args.model == "pupper"
+    assert args.from_keyframe == "home"
+    assert args.middle_keyframe == "rear_push"
+    assert args.to_keyframe == "folded"
+    assert args.switch_time == 0.5
+    assert args.front_fold_time == 0.18
+    assert args.rear_fold_time == 0.55
+    assert args.folded_hold_time == 0.1
+    assert args.walk_to_stand_time == 0.2
+    assert args.stand_hold_time == 0.15
+    assert args.stand_to_folded_time == 0.18
+    assert args.kp == 60.0
+    assert args.kd == 1.0
+    assert args.force_limit == 6.0
+
+
+def test_rear_push_keeps_front_legs_folded():
+    from scripts import simulate_extreme_disk_pose
+
+    root = ET.parse(simulate_extreme_disk_pose.PUPPER_XML_PATH).getroot()
+    folded = root.find("./keyframe/key[@name='folded']")
+    rear_push = root.find("./keyframe/key[@name='rear_push']")
+    folded_ctrl = [float(value) for value in folded.attrib["ctrl"].split()]
+    rear_push_ctrl = [float(value) for value in rear_push.attrib["ctrl"].split()]
+
+    assert rear_push_ctrl[:6] == folded_ctrl[:6]
+    assert rear_push_ctrl[6:] != folded_ctrl[6:]
+
+
+def test_pupper_home_starts_above_the_contacting_pose():
+    from scripts import simulate_extreme_disk_pose
+
+    root = ET.parse(simulate_extreme_disk_pose.PUPPER_XML_PATH).getroot()
+    home = root.find("./keyframe/key[@name='home']")
+    home_qpos = [float(value) for value in home.attrib["qpos"].split()]
+
+    assert home_qpos[2] == 0.30

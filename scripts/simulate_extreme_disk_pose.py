@@ -1,4 +1,4 @@
-"""Physically simulate the extreme disk model through staged pose transitions."""
+"""Physically simulate a robot through staged pose transitions."""
 import argparse
 import threading
 import time
@@ -7,6 +7,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme_train.xml"
+PUPPER_XML_PATH = REPO_ROOT / "assets" / "pupper_v3_disk_visual.xml"
 DEFAULT_FROM_KEYFRAME = "walk_stand"
 DEFAULT_MIDDLE_KEYFRAME = "stand"
 DEFAULT_TO_KEYFRAME = "folded"
@@ -38,17 +39,74 @@ class PlaybackState:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--from-keyframe", default=DEFAULT_FROM_KEYFRAME)
-    parser.add_argument("--middle-keyframe", default=DEFAULT_MIDDLE_KEYFRAME)
-    parser.add_argument("--to-keyframe", default=DEFAULT_TO_KEYFRAME)
-    parser.add_argument("--switch-time", type=float, default=0.5, help="Seconds to wait before starting walk_stand -> stand.")
-    parser.add_argument("--walk-to-stand-time", type=float, default=2.0, help="Seconds to move from walk_stand to stand.")
-    parser.add_argument("--stand-hold-time", type=float, default=0.5, help="Seconds to hold stand before folding.")
-    parser.add_argument("--stand-to-folded-time", type=float, default=2.0, help="Seconds to move from stand to folded.")
+    parser.add_argument("--model", choices=("disk", "pupper"), default="disk")
+    parser.add_argument("--motion", choices=("default", "rear-push-roll"), default="default")
+    parser.add_argument("--xml-path", type=Path)
+    parser.add_argument("--track-body")
+    parser.add_argument("--disk-geom")
+    parser.add_argument("--from-keyframe")
+    parser.add_argument("--middle-keyframe")
+    parser.add_argument("--to-keyframe")
+    parser.add_argument("--switch-time", type=float, help="Seconds to wait before starting the first transition.")
+    parser.add_argument(
+        "--front-fold-time",
+        "--home-to-folded-time",
+        dest="front_fold_time",
+        type=float,
+        help="Seconds to fold the front legs first.",
+    )
+    parser.add_argument("--rear-fold-time", type=float, help="Seconds to fold the rear legs after the front legs.")
+    parser.add_argument("--folded-hold-time", type=float, help="Seconds to hold the preparatory folded pose.")
+    parser.add_argument("--walk-to-stand-time", type=float, help="Seconds to move from the first pose to the middle pose.")
+    parser.add_argument("--stand-hold-time", type=float, help="Seconds to hold the middle pose.")
+    parser.add_argument("--stand-to-folded-time", type=float, help="Seconds to move from the middle pose to the final pose.")
+    parser.add_argument("--kp", type=float, help="Optional runtime position gain override.")
+    parser.add_argument("--kd", type=float, help="Optional runtime velocity gain override.")
+    parser.add_argument("--force-limit", type=float, help="Optional symmetric runtime actuator force limit.")
     parser.add_argument("--headless", action="store_true", help="Run without the interactive viewer.")
     parser.add_argument("--steps", type=int, default=1000, help="Simulation steps for --headless.")
     parser.add_argument("--status-interval", type=float, default=3, help="Seconds between status prints.")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    if args.motion == "rear-push-roll":
+        args.model = "pupper"
+        args.xml_path = args.xml_path or PUPPER_XML_PATH
+        args.track_body = args.track_body or "base_link"
+        args.disk_geom = args.disk_geom or "base_disk_collision"
+        args.from_keyframe = args.from_keyframe or "home"
+        args.middle_keyframe = args.middle_keyframe or "rear_push"
+        args.to_keyframe = args.to_keyframe or "folded"
+        args.switch_time = 0.5 if args.switch_time is None else args.switch_time
+        args.front_fold_time = 0.18 if args.front_fold_time is None else args.front_fold_time
+        args.rear_fold_time = 0.55 if args.rear_fold_time is None else args.rear_fold_time
+        args.folded_hold_time = 0.1 if args.folded_hold_time is None else args.folded_hold_time
+        args.walk_to_stand_time = 0.2 if args.walk_to_stand_time is None else args.walk_to_stand_time
+        args.stand_hold_time = 0.15 if args.stand_hold_time is None else args.stand_hold_time
+        args.stand_to_folded_time = 0.18 if args.stand_to_folded_time is None else args.stand_to_folded_time
+        args.kp = 60.0 if args.kp is None else args.kp
+        args.kd = 1.0 if args.kd is None else args.kd
+        args.force_limit = 6.0 if args.force_limit is None else args.force_limit
+    elif args.model == "pupper":
+        args.xml_path = args.xml_path or PUPPER_XML_PATH
+        args.track_body = args.track_body or "base_link"
+        args.disk_geom = args.disk_geom or "base_disk_collision"
+        args.from_keyframe = args.from_keyframe or "home"
+        args.middle_keyframe = args.middle_keyframe or "home"
+        if args.walk_to_stand_time is None:
+            args.walk_to_stand_time = 0.0
+    else:
+        args.xml_path = args.xml_path or XML_PATH
+        args.track_body = args.track_body or "disk_torso"
+        args.disk_geom = args.disk_geom or "torso_disk"
+        args.from_keyframe = args.from_keyframe or DEFAULT_FROM_KEYFRAME
+        args.middle_keyframe = args.middle_keyframe or DEFAULT_MIDDLE_KEYFRAME
+        if args.walk_to_stand_time is None:
+            args.walk_to_stand_time = 2.0
+    args.to_keyframe = args.to_keyframe or DEFAULT_TO_KEYFRAME
+    args.switch_time = 0.5 if args.switch_time is None else args.switch_time
+    args.stand_hold_time = 0.5 if args.stand_hold_time is None else args.stand_hold_time
+    args.stand_to_folded_time = 2.0 if args.stand_to_folded_time is None else args.stand_to_folded_time
+    return args
 
 
 def lerp_sequence(start, end, alpha, ranges=None):
@@ -86,6 +144,43 @@ def staged_target(sim_time, switch_time, walk_to_stand_time, stand_hold_time, st
             return "stand_hold", 0.0
         return "stand_to_folded", second_alpha
     return "folded", 1.0
+
+
+def rear_push_roll_target(
+    sim_time,
+    switch_time,
+    front_fold_time,
+    rear_fold_time,
+    folded_hold_time,
+    folded_to_push_time,
+    push_hold_time,
+    push_to_folded_time,
+):
+    front_alpha = transition_alpha(sim_time - switch_time, front_fold_time)
+    if front_alpha < 1.0:
+        return "front_fold", front_alpha
+
+    rear_start = switch_time + max(front_fold_time, 0.0)
+    rear_alpha = transition_alpha(sim_time - rear_start, rear_fold_time)
+    if rear_alpha < 1.0:
+        return "rear_fold", rear_alpha
+
+    folded_hold_end = rear_start + max(rear_fold_time, 0.0) + max(folded_hold_time, 0.0)
+    if sim_time < folded_hold_end:
+        return "folded_hold", 0.0
+
+    push_alpha = transition_alpha(sim_time - folded_hold_end, folded_to_push_time)
+    if push_alpha < 1.0:
+        return "folded_to_push", push_alpha
+
+    push_hold_end = folded_hold_end + max(folded_to_push_time, 0.0) + max(push_hold_time, 0.0)
+    if sim_time < push_hold_end:
+        return "push_hold", 0.0
+
+    return_alpha = transition_alpha(sim_time - push_hold_end, push_to_folded_time)
+    if return_alpha < 1.0:
+        return "push_to_folded", return_alpha
+    return "rolling", 1.0
 
 
 def step_target_alpha(sim_time, switch_time, transition_time):
@@ -158,7 +253,15 @@ def main(argv=None):
     import mujoco
     from mujoco import viewer
 
-    model = mujoco.MjModel.from_xml_path(str(XML_PATH))
+    model = mujoco.MjModel.from_xml_path(str(args.xml_path.resolve()))
+    if args.kp is not None:
+        model.actuator_gainprm[:, 0] = args.kp
+        model.actuator_biasprm[:, 1] = -args.kp
+    if args.kd is not None:
+        model.actuator_biasprm[:, 2] = -args.kd
+    if args.force_limit is not None:
+        model.actuator_forcerange[:, 0] = -abs(args.force_limit)
+        model.actuator_forcerange[:, 1] = abs(args.force_limit)
     data = mujoco.MjData(model)
     from_id = _keyframe_id(mujoco, model, args.from_keyframe)
     middle_id = _keyframe_id(mujoco, model, args.middle_keyframe)
@@ -166,9 +269,10 @@ def main(argv=None):
     from_ctrl = _keyframe_ctrl(model, from_id)
     middle_ctrl = _keyframe_ctrl(model, middle_id)
     to_ctrl = _keyframe_ctrl(model, to_id)
+    front_fold_ctrl = to_ctrl[:6] + from_ctrl[6:]
     ctrl_ranges = _control_ranges(model)
-    torso_id = _body_id(mujoco, model, "disk_torso")
-    disk_geom_id = _geom_id(mujoco, model, "torso_disk")
+    torso_id = _body_id(mujoco, model, args.track_body)
+    disk_geom_id = _geom_id(mujoco, model, args.disk_geom)
     state = PlaybackState()
 
     def reset_simulation():
@@ -178,34 +282,55 @@ def main(argv=None):
         mujoco.mj_forward(model, data)
 
     def update_target():
-        stage, alpha = staged_target(
-            data.time,
-            args.switch_time,
-            args.walk_to_stand_time,
-            args.stand_hold_time,
-            args.stand_to_folded_time,
-        )
+        stage, alpha = current_target()
         if not state.switched:
-            if stage == "walk_to_stand":
+            if stage == "front_fold":
+                data.ctrl[:] = lerp_sequence(from_ctrl, front_fold_ctrl, alpha, ctrl_ranges)
+            elif stage == "rear_fold":
+                data.ctrl[:] = lerp_sequence(front_fold_ctrl, to_ctrl, alpha, ctrl_ranges)
+            elif stage == "folded_hold":
+                data.ctrl[:] = to_ctrl
+            elif stage == "folded_to_push":
+                data.ctrl[:] = lerp_sequence(to_ctrl, middle_ctrl, alpha, ctrl_ranges)
+            elif stage == "push_hold":
+                data.ctrl[:] = middle_ctrl
+            elif stage == "push_to_folded":
+                data.ctrl[:] = lerp_sequence(middle_ctrl, to_ctrl, alpha, ctrl_ranges)
+            elif stage == "walk_to_stand":
                 data.ctrl[:] = lerp_sequence(from_ctrl, middle_ctrl, alpha, ctrl_ranges)
             elif stage in ("stand_hold", "stand_to_folded"):
                 fold_alpha = 0.0 if stage == "stand_hold" else alpha
                 data.ctrl[:] = lerp_sequence(middle_ctrl, to_ctrl, fold_alpha, ctrl_ranges)
             else:
                 data.ctrl[:] = lerp_sequence(middle_ctrl, to_ctrl, 1.0, ctrl_ranges)
-        if not state.switched and stage == "folded":
+        finished_stage = "rolling" if args.motion == "rear-push-roll" else "folded"
+        if not state.switched and stage == finished_stage:
             state.switched = True
             print(f"finished target transition to {args.to_keyframe} at t={data.time:.3f}", flush=True)
         return stage, alpha
 
-    def step_physics():
-        stage, alpha = staged_target(
+    def current_target():
+        if args.motion == "rear-push-roll":
+            return rear_push_roll_target(
+                data.time,
+                args.switch_time,
+                args.front_fold_time,
+                args.rear_fold_time,
+                args.folded_hold_time,
+                args.walk_to_stand_time,
+                args.stand_hold_time,
+                args.stand_to_folded_time,
+            )
+        return staged_target(
             data.time,
             args.switch_time,
             args.walk_to_stand_time,
             args.stand_hold_time,
             args.stand_to_folded_time,
         )
+
+    def step_physics():
+        stage, alpha = current_target()
         if not state.paused:
             stage, alpha = update_target()
             mujoco.mj_step(model, data)
@@ -228,18 +353,38 @@ def main(argv=None):
             print("reset simulation", flush=True)
 
     reset_simulation()
-    print(
-        f"physically simulating {args.from_keyframe} -> {args.middle_keyframe} -> {args.to_keyframe}",
-        flush=True,
-    )
-    print(
-        f"switch_time={args.switch_time:.3f}s "
-        f"walk_to_stand_time={args.walk_to_stand_time:.3f}s "
-        f"stand_hold_time={args.stand_hold_time:.3f}s "
-        f"stand_to_folded_time={args.stand_to_folded_time:.3f}s; "
-        "after alpha reaches 1.0 the target stays fixed.",
-        flush=True,
-    )
+    print(f"model={args.xml_path.resolve()}", flush=True)
+    if args.kp is not None or args.kd is not None or args.force_limit is not None:
+        print(
+            f"runtime actuator override: kp={args.kp} kd={args.kd} force_limit={args.force_limit}",
+            flush=True,
+        )
+    if args.motion == "rear-push-roll":
+        sequence = f"{args.from_keyframe} -> {args.to_keyframe} -> {args.middle_keyframe} -> {args.to_keyframe}"
+    else:
+        sequence = f"{args.from_keyframe} -> {args.middle_keyframe} -> {args.to_keyframe}"
+    print(f"physically simulating {sequence}", flush=True)
+    if args.motion == "rear-push-roll":
+        print(
+            f"switch_time={args.switch_time:.3f}s "
+            f"front_fold_time={args.front_fold_time:.3f}s "
+            f"rear_fold_time={args.rear_fold_time:.3f}s "
+            f"folded_hold_time={args.folded_hold_time:.3f}s "
+            f"folded_to_push_time={args.walk_to_stand_time:.3f}s "
+            f"push_hold_time={args.stand_hold_time:.3f}s "
+            f"push_to_folded_time={args.stand_to_folded_time:.3f}s; "
+            "the folded target stays fixed while the robot rolls.",
+            flush=True,
+        )
+    else:
+        print(
+            f"switch_time={args.switch_time:.3f}s "
+            f"walk_to_stand_time={args.walk_to_stand_time:.3f}s "
+            f"stand_hold_time={args.stand_hold_time:.3f}s "
+            f"stand_to_folded_time={args.stand_to_folded_time:.3f}s; "
+            "after alpha reaches 1.0 the target stays fixed.",
+            flush=True,
+        )
 
     if args.headless:
         last_status_time = -float("inf")

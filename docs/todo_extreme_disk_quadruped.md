@@ -1,106 +1,59 @@
-# 极端圆盘躯干四足机器人 TODO 与进度记录
+# Extreme Disk Quadruped TODO
 
-## 当前状态
+> 行走训练任务以 [omnidirectional_training_pipeline.md](omnidirectional_training_pipeline.md) 为准。
 
-- 已确定第一版形态：正常四足布局 + 侧视近圆盘、前视窄厚度的 disk 型躯干。
-- 第一阶段使用抽象 MJCF，不直接修改 Pupper v3。
-- 已建立模型文件：`assets/disk_quadruped_extreme.xml`。
-- 已保留 12 个单独 position actuator，不在 XML 中做前后腿物理耦合。
-- 已人工标定两个暂定标准姿态：
-  - `stand`：标准站立姿态。
-  - `folded`：收腿/滚动准备姿态。
-- 已添加工具脚本：
-  - `scripts/view_extreme_disk_pose.py`：查看 `stand` / `folded`。
-  - `scripts/control_extreme_disk_flex.py`：用键盘联动控制前腿、后腿或全部 `hip_flex`。
-  - `scripts/interpolate_extreme_disk_pose.py`：播放 `stand <-> folded` 姿态插值。
-  - `scripts/diagnose_extreme_disk_pose.py`：输出 torso 高度、接触数量、脚端高度、关节角和 ctrl。
+## 已完成基础
 
-## 已讨论的重要观点
+- 极端圆盘机身 MJCF 和 12 关节 position actuator 基线。
+- `stand`、`folded` keyframe 及姿态诊断、插值和物理仿真脚本。
+- Pupper 可视化模型、腿长与碰撞体的初步适配。
+- home、folded、后腿蹬地、收腿滚动的开环动作原型。
+- CPU 行走 smoke 环境和 MJX PPO 训练入口。
+- W&B 指标与训练视频基础链路。
 
-- 当前模型不是球形机器人，而是正常四足机器人加极端圆盘躯干。
-- 当前 XML 中的 `stand` 和 `folded` 由人工标定，后续脚本和训练优先引用这两个 keyframe。
-- Viewer 中的网格显示是 MuJoCo 可视化选项，不是 PNG 警告导致，也不是 XML 损坏。
-- `body pos` 是相对于父 body 的局部坐标；父 body 旋转会影响子 body 坐标系。
-- `ctrlrange` 是 actuator 输入范围，不等于关节物理范围；关节范围由 joint 的 `range` / `limited` 决定。
-- 探索阶段保留 12 个单独 actuator；前后腿 flex 联动放在 Python 控制脚本层实现，不改 XML actuator 结构。
-- 姿态插值脚本只用于观察几何路径，不代表真实动力学控制已经能完成收腿。
+这些完成项表示工具链可运行，不表示旧奖励或 open-loop residual 接口满足最终目标。
 
-## 第一阶段诊断结果
+## P0：无 Gait 行走契约
 
-诊断命令：
+- [x] 固化关节顺序、正方向、零位、`q_stand` 与每关节 action scale。
+- [x] 将动作目标统一为 `a=tanh(policy_logits)`、`q_target=q_stand + action_scale * a`。
+- [x] 移除最终 actor 对 gait phase、teacher target 和预设接触时序的依赖。
+- [x] command 统一为机身坐标系 `[vx, vy, wz]`。
+- [x] actor 观测限制为实机可获得量，历史长度设为 4 帧。
 
-```powershell
-python -m scripts.diagnose_extreme_disk_pose --keyframe all
-```
+## P0：环境正确性
 
-当前结果摘要：
+- [x] 统一 CPU MuJoCo 与 MJX 的逐项奖励和默认参数。
+- [x] 移除四足持续接触正奖励、固定世界方向奖励和过强 action-delta 惩罚。
+- [x] 增加奖励偏好、command 采样和 action 映射测试。
+- [ ] 增加 CPU/MJX 数值逐步对齐测试与单关节方向测试。
+- [x] 记录 reward breakdown、速度误差、跌倒率、滑移与 action RMS。
+- [ ] 增加 actuator force 和机械功指标。
 
-- `stand`：
-  - torso 中心高度 `z=0.3200`。
-  - 第一帧有 4 个接触：四个脚都与地面接触。
-  - 四个脚球中心高度约 `center_z=-0.0530`，脚球半径为 `0.035`，所以 clearance 约 `-0.0880`。
-  - 这说明当前站立 keyframe 是“带穿入的接触初值”。MuJoCo 继续运行后会由接触求解器修正，但如果用 passive 卡在第一帧，会看到脚在地面以下。
-- `folded`：
-  - torso 中心高度 `z=0.2400`。
-  - 第一帧有 6 个接触：躯干与地面接触，并且四个脚与躯干接触。
-  - 四个脚已经收高，脚球 clearance 约 `0.1049`。
-  - 这适合作为滚动准备姿态的第一版，但脚-躯干内部接触需要在后续训练/碰撞组设计中继续关注。
+## P1：示范初始化
 
-## 收腿与滚动切换策略假设
+- [ ] 用现有 gait/轨迹工具导出 `(observation, command, residual target)` 数据集。
+- [ ] 保证数据不要求最终 actor 输入 gait phase。
+- [ ] 增加 BC 训练、验证和闭环 rollout 入口。
+- [ ] 验证 BC 模型在 teacher 关闭后仍可持续推进。
 
-因为躯干是 disk 型、腹部是弧形，前后腿同时收起到一定程度时可能导致机器人不稳定。后续从 `stand` 到 `folded` 的切换不应只有简单同步插值。
+## P1：PPO 与 Command Curriculum
 
-建议策略：
+- [ ] 从 BC checkpoint 启动基础前进 PPO。
+- [ ] 在同一 run 内逐步扩展 `vx`，不重置 optimizer。
+- [ ] 加入停止、后退、`vy` 和 `wz`，最后联合采样。
+- [ ] 固定 evaluation seeds 与 command 网格，按门槛扩大任务空间。
+- [ ] 将 imitation loss 平滑衰减到 0，执行无 teacher 验收。
 
-- 初期允许前后腿同步向 `folded` 靠近。
-- 当 torso 中心高度下降到阈值附近，例如 `z <= 0.25`，切换为前后腿分阶段收起。
-- 向前滚动时，先收前腿，让机器人借助重心偏移和圆盘腹部接触向前滚起来。
-- 前腿完成一定折叠进度后，再收后腿，进入完整 `folded` 姿态。
-- 后续可以把该过程做成 scripted reference trajectory，再用于 curriculum 或 imitation-style reward。
+## P2：Sim-to-real
 
-## TODO
+- [ ] 根据 CAD、称重和电机数据更新质量、质心、惯量、增益和力矩范围。
+- [ ] 分阶段加入摩擦、动力学、噪声、延迟、地形和外力随机化。
+- [ ] 建立训练关节命令到 Pupper position action 的一致性检查。
+- [ ] 实机先做悬空、小幅动作、急停和关节限位验证，再落地测试。
 
-### 阶段 1：模型与姿态工具
+## 后续技能
 
-- [x] 建立 `disk_quadruped_extreme.xml`。
-- [x] 保留 12 个单独 actuator。
-- [x] 标定 `stand` keyframe。
-- [x] 标定 `folded` keyframe。
-- [x] 添加姿态查看脚本。
-- [x] 添加前后腿 flex 键盘联动脚本。
-- [x] 添加 `stand <-> folded` 姿态插值脚本。
-- [x] 添加姿态诊断脚本：输出脚端高度、接触数量、torso 高度、关节角和 ctrl。
-- [x] 检查当前 `stand` 第一帧接触状态，并记录脚球穿入现象。
-- [x] 检查当前 `folded` 第一帧接触状态，并记录躯干接地和脚-躯干接触。
-
-阶段 1 当前可以视为完成。进入训练前，如果要提高物理干净程度，可以再单独做一次“碰撞/初始高度修正”小迭代；但这不阻塞我们把第一版模型冻结下来作为实验基线。
-
-### 阶段 2：行走训练准备
-
-- [ ] 为 disk quadruped 新建独立 MJX/Brax environment，不直接复用 curl environment。
-- [ ] 定义 walk observation：base pose/velocity、joint qpos/qvel、foot contact、command velocity。
-- [ ] 定义 walk reward：前向速度、姿态稳定、能耗、足端接触、圆盘躯干不过早滚动。
-- [ ] 做随机动作 smoke test。
-
-### 阶段 3：滚动训练准备
-
-- [ ] 从 `folded` keyframe 初始化 rolling task。
-- [ ] 定义 rolling reward：前向位移、圆盘角速度、保持折叠、减少异常腿地面碰撞。
-- [ ] 记录 disk 躯干接触状态和角速度。
-- [ ] 验证人工扰动或简单脚本能让躯干产生滚动趋势。
-
-### 阶段 4：切换训练准备
-
-- [ ] 实现 `stand -> folded` scripted reference trajectory。
-- [ ] 加入 torso 高度阈值，例如 `z <= 0.25` 后切换为分阶段收腿。
-- [ ] 向前滚动默认顺序：先前腿，后后腿。
-- [ ] 设计 `walk -> roll` 和 `roll -> walk` 的静止起步任务。
-- [ ] 后续再扩展到动态行走中切换。
-
-## 2026-07-03 Stage 2 walking update
-
-- Added local MuJoCo walk smoke environment: `disk_robot/walk_env.py`.
-- Added task config and reward modules: `disk_robot/walk_config.py`, `disk_robot/walk_reward.py`.
-- Added local smoke command: `python -m scripts.walk_smoke --steps 100 --policy zero`.
-- Added cloud-oriented MJX/Brax walk training entrypoint: `python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128`.
-- Stage 2 local validation is intentionally a smoke test, not local PPO training. Full training is expected to run on the compute platform.
+- [ ] 单独训练或优化 `roll_policy`。
+- [ ] 将折叠、蹬地和收腿动作改为反馈式 `transition_policy`。
+- [ ] 用 FSM 管理 `walk`、`transition` 和 `roll`，最后再评估统一策略或蒸馏。

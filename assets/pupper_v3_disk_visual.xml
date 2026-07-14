@@ -1,7 +1,27 @@
 <mujoco model="pupper_v3_disk">
     <keyframe>
-        <key name="home" qpos="0 0 0.28             1 0 0 0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0" ctrl="0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0" />
-        <key name="stand" qpos="0 0 0.28             1 0 0 0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0" ctrl="0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0" />
+        <key name="home" qpos="0 0 0.30             1 0 0 0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0" ctrl="0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0" />
+        <key name="stand" qpos="0 0 0.30             1 0 0 0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0" ctrl="0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0             0.0 0.0 0.0" />
+        <key name="folded"
+                qpos="0 0 0.24 1 0 0 0
+                    -0.251 0.0  0.88
+                     0.251 0.0 -0.88
+                    -1.600 0.0  0.88
+                     1.600 0.0 -0.88"
+                ctrl="-0.251 0.0  0.88
+                       0.251 0.0 -0.88
+                      -1.600 0.0  0.88
+                       1.600 0.0 -0.88"/>
+        <key name="rear_push"
+                qpos="0 0 0.2649 1 0 0 0
+                     -0.251 0.0  0.88
+                      0.251 0.0 -0.88
+                      0.0  0.0 -1.8
+                      0.0  0.0  1.8"
+                ctrl="-0.251 0.0  0.88
+                       0.251 0.0 -0.88
+                      0.0  0.0 -1.8
+                      0.0  0.0  1.8"/>
     </keyframe>
     <asset>
         <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="512" height="512" />
@@ -32,7 +52,7 @@
         <general joint="leg_back_l_3" name="leg_back_l_3" />
     </actuator>
     <default>
-        <general forcerange="-3 3" forcelimited="true" biastype="affine" gainprm="5.0 0 0" biasprm="0 -5.0 -0.1" />
+        <general ctrlrange="-3.141593 3.141593" ctrllimited="true" forcerange="-3 3" forcelimited="true" biastype="affine" gainprm="5.0 0 0" biasprm="0 -5.0 -0.1" />
         <geom condim="3" contype="0" conaffinity="0" />
         <default class="collision">
             <geom group="3" contype="0" conaffinity="1" solimp="0.015 1 0.015" friction="0.8 0.02 0.01" />
@@ -59,79 +79,80 @@
     </asset>
     <worldbody>
         <body name="base_link" pos="0 0 0.13" gravcomp="0">
-            <inertial pos="0 0 0.015" mass="1.506" diaginertia="0.008 0.008 0.0148" />
+            <!-- Keep the measured Pupper mass, but approximate its inertia as the enlarged disk. -->
+            <inertial pos="0 0 0.015" mass="1.506" diaginertia="0.03012 0.0158632 0.0158632" />
             <freejoint name="world_to_body" />
-            <geom name="base_disk_collision" type="cylinder" size="0.14 0.035" quat="0.7071068 0.7071068 0 0" pos="0 0 0.015" class="collision" />
-            <geom name="base_disk_visual" type="cylinder" size="0.14 0.035" quat="0.7071068 0.7071068 0 0" pos="0 0 0.015" rgba="0.1 0.45 0.85 1" contype="0" conaffinity="0" group="1" density="0" />
-            <body name="leg_front_r_1" pos="0.075 -0.0835 0" quat="0.707105 0.707108 0 0" gravcomp="0">
+            <geom name="base_disk_collision" type="cylinder" size="0.20 0.04" quat="0.7071068 0.7071068 0 0" pos="0 0 0.015" class="collision" />
+            <geom name="base_disk_visual" type="cylinder" size="0.20 0.04" quat="0.7071068 0.7071068 0 0" pos="0 0 0.015" rgba="0.1 0.45 0.85 1" contype="0" conaffinity="0" group="1" density="0" />
+            <body name="leg_front_r_1" pos="0.1 -0.07 -0.07" quat="0.707105 0.707108 0 0" gravcomp="0">
                 <inertial pos="0 0 0" mass="0.18" diaginertia="7.4e-05 5.8e-05 4.8e-05" />
-                <joint name="leg_front_r_1" pos="0 0 0" axis="0 0 1" range="-1.22 2.51" />
+                <joint name="leg_front_r_1" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
                 <geom pos="0 0 -0.028" quat="1.32679e-06 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_001" />
                 <body name="leg_front_r_2" pos="0 0 0" quat="0.707107 2.24089e-06 -0.707107 4.83018e-06" gravcomp="0">
-                    <inertial pos="0 -0.0334 0.05419" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000113 9.74951e-05 4.65049e-05" />
-                    <joint name="leg_front_r_2" pos="0 0 0" axis="0 0 1" range="-0.42 3.14" />
-                    <geom size="0.025" pos="0 -0.0494 0.0685" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
+                    <inertial pos="0 -0.0553669 0.0898303" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000310517 0.000267911 0.000127793" />
+                    <joint name="leg_front_r_2" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
+                    <geom size="0.025" pos="0 -0.08189 0.113552" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
                     <geom pos="-0.028 0 0" quat="-2.93388e-06 0.707108 2.26082e-06 0.707106" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_002" />
-                    <body name="leg_front_r_3" pos="0 -0.0494 0.0685" quat="0.707105 0 0.707108 0" gravcomp="0">
-                        <inertial pos="0.03866 -0.03585 0.01833" quat="0.270598 0.653281 -0.270598 0.653281" mass="0.05" diaginertia="7.7e-05 7.55e-05 5.5e-06" />
-                        <joint name="leg_front_r_3" pos="0 0 0" axis="0 0 1" range="-2.79 0.71" />
-                        <geom size="0.01995" pos="0.06231 -0.06216 0.018" quat="1.32679e-06 0 0 1" type="sphere" class="collision" />
-                        <geom pos="0.0685 0.0494 -0.028" quat="1.32679e-06 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_003" />
-                        <site name="leg_front_r_3_foot_site" pos="0.06231 -0.06216 0.018" />
+                    <body name="leg_front_r_3" pos="0 -0.08189 0.113552" quat="0.707105 0 0.707108 0" gravcomp="0">
+                        <inertial pos="0.0516411 -0.0478876 0.0244848" quat="0.270598 0.653281 -0.270598 0.653281" mass="0.05" diaginertia="0.000137391 0.000134714 9.81364e-06" />
+                        <joint name="leg_front_r_3" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
+                        <geom size="0.01995" pos="0.0832322 -0.0830318 0.024044" quat="1.32679e-06 0 0 1" type="sphere" class="collision" />
+                        <geom pos="0.0894222 0.0285282 -0.021956" quat="1.32679e-06 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_003" />
+                        <site name="leg_front_r_3_foot_site" pos="0.0832322 -0.0830318 0.024044" />
                     </body>
                 </body>
             </body>
-            <body name="leg_front_l_1" pos="0.075 0.0835 0" quat="0.707105 -0.707108 0 0" gravcomp="0">
+            <body name="leg_front_l_1" pos="0.1 0.07 -0.07" quat="0.707105 -0.707108 0 0" gravcomp="0">
                 <inertial pos="0 0 0" mass="0.18" diaginertia="7.4e-05 5.8e-05 4.8e-05" />
-                <joint name="leg_front_l_1" pos="0 0 0" axis="0 0 1" range="-2.51 1.22" />
+                <joint name="leg_front_l_1" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
                 <geom pos="0 0 -0.028" quat="1.32679e-06 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_010" />
                 <body name="leg_front_l_2" pos="0 0 0" quat="-3.89602e-06 0.707107 -1.29867e-06 -0.707107" gravcomp="0">
-                    <inertial pos="0 -0.0334 0.05419" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000113 9.74951e-05 4.65049e-05" />
-                    <joint name="leg_front_l_2" pos="0 0 0" axis="0 0 1" range="-3.14 0.42" />
-                    <geom size="0.025" pos="0 -0.0494 0.0685" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
+                    <inertial pos="0 -0.0553669 0.0898303" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000310517 0.000267911 0.000127793" />
+                    <joint name="leg_front_l_2" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
+                    <geom size="0.025" pos="0 -0.08189 0.113552" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
                     <geom pos="0.028 0 0" quat="-2.93388e-06 0.707108 2.26082e-06 0.707106" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_011" />
-                    <body name="leg_front_l_3" pos="0 -0.0494 0.0685" quat="9.38184e-07 -0.707108 9.38187e-07 0.707105" gravcomp="0">
-                        <inertial pos="0.03866 0.03585 0.01833" quat="0.653281 0.270598 -0.653281 0.270598" mass="0.05" diaginertia="7.7e-05 7.55e-05 5.5e-06" />
-                        <joint name="leg_front_l_3" pos="0 0 0" axis="0 0 1" range="-0.71 2.79" />
-                        <geom size="0.01995" pos="0.06231 0.06216 0.018" quat="1.32679e-06 0 0 1" type="sphere" class="collision" />
-                        <geom pos="0.0685 -0.0494 -0.028" quat="1.76029e-12 1.32679e-06 1 1.32679e-06" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_012" />
-                        <site name="leg_front_l_3_foot_site" pos="0.06231 0.06216 0.018" />
+                    <body name="leg_front_l_3" pos="0 -0.08189 0.113552" quat="9.38184e-07 -0.707108 9.38187e-07 0.707105" gravcomp="0">
+                        <inertial pos="0.0516411 0.0478876 0.0244848" quat="0.653281 0.270598 -0.653281 0.270598" mass="0.05" diaginertia="0.000137391 0.000134714 9.81364e-06" />
+                        <joint name="leg_front_l_3" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
+                        <geom size="0.01995" pos="0.0832322 0.0830318 0.024044" quat="1.32679e-06 0 0 1" type="sphere" class="collision" />
+                        <geom pos="0.0894222 -0.0285282 -0.021956" quat="1.76029e-12 1.32679e-06 1 1.32679e-06" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_012" />
+                        <site name="leg_front_l_3_foot_site" pos="0.0832322 0.0830318 0.024044" />
                     </body>
                 </body>
             </body>
-            <body name="leg_back_r_1" pos="-0.075 -0.0725 0" quat="0.707105 0.707108 0 0" gravcomp="0">
+            <body name="leg_back_r_1" pos="-0.1 -0.07 -0.07" quat="0.707105 0.707108 0 0" gravcomp="0">
                 <inertial pos="0 0 0" mass="0.18" diaginertia="7.4e-05 5.8e-05 4.8e-05" />
-                <joint name="leg_back_r_1" pos="0 0 0" axis="0 0 1" range="-1.22 2.51" />
+                <joint name="leg_back_r_1" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
                 <geom pos="0 0 -0.028" quat="1.32679e-06 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_005" />
                 <body name="leg_back_r_2" pos="0 0 0" quat="0.707107 2.24089e-06 -0.707107 4.83018e-06" gravcomp="0">
-                    <inertial pos="0 -0.0334 0.05419" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000113 9.74951e-05 4.65049e-05" />
-                    <joint name="leg_back_r_2" pos="0 0 0" axis="0 0 1" range="-0.42 3.14" />
-                    <geom size="0.025" pos="0 -0.0494 0.0685" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
+                    <inertial pos="0 -0.0553669 0.0898303" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000310517 0.000267911 0.000127793" />
+                    <joint name="leg_back_r_2" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
+                    <geom size="0.025" pos="0 -0.08189 0.113552" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
                     <geom pos="-0.028 0 0" quat="-2.93388e-06 0.707108 2.26082e-06 0.707106" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_006" />
-                    <body name="leg_back_r_3" pos="0 -0.0494 0.0685" quat="0.707105 0 0.707108 0" gravcomp="0">
-                        <inertial pos="0.03866 -0.03585 0.01833" quat="0.270598 0.653281 -0.270598 0.653281" mass="0.05" diaginertia="7.7e-05 7.55e-05 5.5e-06" />
-                        <joint name="leg_back_r_3" pos="0 0 0" axis="0 0 1" range="-2.79 0.71" />
-                        <geom size="0.01995" pos="0.06231 -0.06216 0.018" quat="1.32679e-06 0 0 1" type="sphere" class="collision" />
-                        <geom pos="0.0685 0.0494 -0.028" quat="1.32679e-06 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_007" />
-                        <site name="leg_back_r_3_foot_site" pos="0.06231 -0.06216 0.018" />
+                    <body name="leg_back_r_3" pos="0 -0.08189 0.113552" quat="0.707105 0 0.707108 0" gravcomp="0">
+                        <inertial pos="0.0516411 -0.0478876 0.0244848" quat="0.270598 0.653281 -0.270598 0.653281" mass="0.05" diaginertia="0.000137391 0.000134714 9.81364e-06" />
+                        <joint name="leg_back_r_3" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
+                        <geom size="0.01995" pos="0.0832322 -0.0830318 0.024044" quat="1.32679e-06 0 0 1" type="sphere" class="collision" />
+                        <geom pos="0.0894222 0.0285282 -0.021956" quat="1.32679e-06 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_007" />
+                        <site name="leg_back_r_3_foot_site" pos="0.0832322 -0.0830318 0.024044" />
                     </body>
                 </body>
             </body>
-            <body name="leg_back_l_1" pos="-0.075 0.0725 0" quat="0.707105 -0.707108 0 0" gravcomp="0">
+            <body name="leg_back_l_1" pos="-0.1 0.07 -0.07" quat="0.707105 -0.707108 0 0" gravcomp="0">
                 <inertial pos="0 0 0" mass="0.18" diaginertia="7.4e-05 5.8e-05 4.8e-05" />
-                <joint name="leg_back_l_1" pos="0 0 0" axis="0 0 1" range="-2.51 1.22" />
+                <joint name="leg_back_l_1" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
                 <geom pos="0 0 -0.028" quat="1.32679e-06 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_013" />
                 <body name="leg_back_l_2" pos="0 0 0" quat="-3.89602e-06 0.707107 -1.29867e-06 -0.707107" gravcomp="0">
-                    <inertial pos="0 -0.0334 0.05419" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000113 9.74951e-05 4.65049e-05" />
-                    <joint name="leg_back_l_2" pos="0 0 0" axis="0 0 1" range="-3.14 0.42" />
-                    <geom size="0.025" pos="0 -0.0494 0.0685" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
+                    <inertial pos="0 -0.0553669 0.0898303" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000310517 0.000267911 0.000127793" />
+                    <joint name="leg_back_l_2" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
+                    <geom size="0.025" pos="0 -0.08189 0.113552" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
                     <geom pos="0.028 0 0" quat="-2.93388e-06 0.707108 2.26082e-06 0.707106" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_014" />
-                    <body name="leg_back_l_3" pos="0 -0.0494 0.0685" quat="9.38184e-07 -0.707108 9.38187e-07 0.707105" gravcomp="0">
-                        <inertial pos="0.03866 0.03585 0.01833" quat="0.653281 0.270598 -0.653281 0.270598" mass="0.05" diaginertia="7.7e-05 7.55e-05 5.5e-06" />
-                        <joint name="leg_back_l_3" pos="0 0 0" axis="0 0 1" range="-0.71 2.79" />
-                        <geom size="0.01995" pos="0.06231 0.06216 0.018" quat="1.32679e-06 0 0 1" type="sphere" class="collision" />
-                        <geom pos="0.0685 -0.0494 -0.028" quat="1.76029e-12 1.32679e-06 1 1.32679e-06" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_015" />
-                        <site name="leg_back_l_3_foot_site" pos="0.06231 0.06216 0.018" />
+                    <body name="leg_back_l_3" pos="0 -0.08189 0.113552" quat="9.38184e-07 -0.707108 9.38187e-07 0.707105" gravcomp="0">
+                        <inertial pos="0.0516411 0.0478876 0.0244848" quat="0.653281 0.270598 -0.653281 0.270598" mass="0.05" diaginertia="0.000137391 0.000134714 9.81364e-06" />
+                        <joint name="leg_back_l_3" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
+                        <geom size="0.01995" pos="0.0832322 0.0830318 0.024044" quat="1.32679e-06 0 0 1" type="sphere" class="collision" />
+                        <geom pos="0.0894222 -0.0285282 -0.021956" quat="1.76029e-12 1.32679e-06 1 1.32679e-06" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_015" />
+                        <site name="leg_back_l_3_foot_site" pos="0.0832322 0.0830318 0.024044" />
                     </body>
                 </body>
             </body>
