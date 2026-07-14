@@ -174,7 +174,7 @@ def _copy_path(src: Path, dst: Path):
 
 
 def _resolve_restore_checkpoint(path: Path) -> Path:
-    path = path.expanduser()
+    path = Path(path).expanduser().resolve()
     if not path.is_dir():
         return path
     numbered = sorted(
@@ -428,7 +428,7 @@ def main(argv=None):
     checkpoint_kwargs = {}
     train_parameters = inspect.signature(ppo.train).parameters
     if "save_checkpoint_path" in train_parameters:
-        checkpoint_kwargs["save_checkpoint_path"] = str(args.out / "ppo_checkpoint")
+        checkpoint_kwargs["save_checkpoint_path"] = str((args.out / "ppo_checkpoint").resolve())
     if args.restore_checkpoint is not None:
         if "restore_checkpoint_path" not in train_parameters:
             raise SystemExit("Installed Brax does not support restore_checkpoint_path; upgrade Brax.")

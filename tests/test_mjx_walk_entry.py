@@ -74,3 +74,11 @@ def test_restore_checkpoint_parent_selects_latest_numbered_child(tmp_path):
     latest.mkdir()
 
     assert _resolve_restore_checkpoint(tmp_path) == latest
+
+
+def test_restore_checkpoint_path_is_made_absolute(tmp_path, monkeypatch):
+    from scripts.mjx_train_walk import _resolve_restore_checkpoint
+
+    monkeypatch.chdir(tmp_path)
+
+    assert _resolve_restore_checkpoint(tmp_path.name).is_absolute()
