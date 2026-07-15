@@ -680,25 +680,59 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
         next_state = step_batch(current_state, action)
         alive = 1.0 - current_state.done
         return next_state, (
+            next_state.reward,
             next_state.metrics["velocity_x"],
             next_state.metrics["velocity_y"],
             next_state.metrics["abs_velocity_y"],
             next_state.metrics["abs_yaw_rate"],
             next_state.metrics["velocity_error"],
+            next_state.metrics["smoothed_velocity_error"],
             next_state.metrics["roll_pitch_rate_rms"],
             next_state.metrics["disk_contact_count"],
+            next_state.metrics["push_applied"],
+            next_state.metrics["post_push"],
+            next_state.metrics["recovery_ready"],
             next_state.metrics["failed"],
             alive,
         )
 
     _, values = jax.lax.scan(eval_step, state, (), length=horizon)
-    vx, vy, abs_vy, abs_yaw_rate, velocity_error, roll_pitch_rate, disk_contact, failed, alive = [
-        np.asarray(jax.device_get(value)) for value in values
-    ]
+    (
+        reward,
+        vx,
+        vy,
+        abs_vy,
+        abs_yaw_rate,
+        velocity_error,
+        smoothed_velocity_error,
+        roll_pitch_rate,
+        disk_contact,
+        push_applied,
+        post_push,
+        recovery_ready,
+        failed,
+        alive,
+    ) = [np.asarray(jax.device_get(value)) for value in values]
     denominator = max(float(np.sum(alive)), 1.0)
+    post_push_alive = post_push * alive
+    post_push_denominator = max(float(np.sum(post_push_alive)), 1.0)
+    has_push = np.max(push_applied, axis=0) > 0.5
+    recovery_candidates = (recovery_ready > 0.5) & (post_push > 0.5) & (alive > 0.5)
+    first_recovery = np.argmax(recovery_candidates, axis=0)
+    recovered = np.any(recovery_candidates, axis=0)
+    push_index = np.argmax(push_applied, axis=0)
+    recovery_steps = np.where(
+        recovered,
+        np.maximum(first_recovery - push_index, 0),
+        env.config.recovery_window_steps,
+    )
+    mean_recovery_time = (
+        float(np.mean(recovery_steps[has_push])) * env.dt if np.any(has_push) else 0.0
+    )
     failed_any = np.max(failed, axis=0)
     mean_velocity_x = float(np.sum(vx * alive) / denominator)
     return {
+        "reward_per_step": float(np.sum(reward * alive) / denominator),
         "mean_velocity_x": mean_velocity_x,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
         "mean_lateral_distance": float(np.mean(np.sum(vy * alive, axis=0)) * env.dt),
@@ -710,6 +744,17 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
         ),
         "mean_roll_pitch_rate_rms": float(np.sum(roll_pitch_rate * alive) / denominator),
         "mean_disk_contacts": float(np.sum(disk_contact * alive) / denominator),
+        "mean_post_push_velocity_error": float(
+            np.sum(smoothed_velocity_error * post_push_alive) / post_push_denominator
+        ),
+        "mean_post_push_instantaneous_velocity_error": float(
+            np.sum(velocity_error * post_push_alive) / post_push_denominator
+        ),
+        "mean_post_push_abs_velocity_y": float(
+            np.sum(abs_vy * post_push_alive) / post_push_denominator
+        ),
+        "mean_recovery_time": mean_recovery_time,
+        "push_coverage": float(np.mean(has_push)),
         "failure_rate": float(np.mean(failed_any)),
         "mean_alive_steps": float(np.mean(np.sum(alive, axis=0))),
     }

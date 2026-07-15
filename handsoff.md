@@ -247,9 +247,9 @@ steps for the same request.
 
 T1b still does not prove a useful privileged Teacher. It proves PPO can avoid destroying IK.
 
-## 9. Current Task: T2a Privileged Disturbance Teacher
+## 9. T2a Result: Passed
 
-T2a is now implemented locally with:
+T2a was implemented with:
 
 - one randomized forward/lateral root-velocity push per episode;
 - episode-level approximate motor-strength variation;
@@ -272,26 +272,61 @@ world XY velocity (`alpha=0.10`) and requires four consecutive control steps wit
 `0.04 m/s` forward and lateral tolerances. Raw post-push instantaneous error is still
 reported separately.
 
-Run the cloud smoke first:
+The formal cloud run `mjx_runs/teacher_t2a_seed0` passed both robust gates:
 
-```bash
-python -m scripts.train_forward_teacher_student --smoke --teacher-only --teacher-selection-mode robust --teacher-disturbances --teacher-learning-rate 1e-5 --teacher-entropy-cost 0 --teacher-updates-per-batch 1 --residual-scale-multiplier 0.25 --out mjx_runs/teacher_t2a_smoke_seed0
+```text
+selected_source=ppo
+selected_step=1,024,000
+nominal_preserved=True
+disturbed_improved=True
+accepted=True
+params=mjx_runs/teacher_t2a_seed0/teacher/params
 ```
 
-The first decision is whether `stage=ik_baseline_disturbed` is meaningfully worse than the
-nominal IK baseline. If pushes are too weak to expose a recovery deficit, increase push
-velocity before running a long Teacher experiment. Do not interpret a robust-gate failure in
-a 20k smoke as a learning result; smoke primarily checks compilation and metric semantics.
+This is the first accepted privileged disturbance Teacher and is the frozen source for T3.
+Do not retrain or overwrite it while distilling the Student.
 
-An initial one-million-step experiment, after smoke validation, can use:
+## 10. Current Task: T3 Frozen-Teacher Behavior Cloning
+
+T3 is implemented as a separate entry point, `scripts/distill_forward_student.py`. It:
+
+- requires an accepted PPO Teacher run and refuses rejected or IK-baseline runs;
+- reconstructs the exact Teacher config and IK reference from `run_config.json`;
+- loads `teacher/params` without running PPO or changing Teacher parameters;
+- collects a shuffled 50/50 nominal and disturbed demonstration dataset;
+- trains only the gait-free Student by behavior cloning;
+- evaluates Student separately in nominal and disturbed environments;
+- reports post-push error, recovery time, push coverage, and retention relative to Teacher;
+- saves `student_policy_bc.npz`, `student_policy_bc.json`, and `evaluation.json`;
+- contains no DAgger collection. DAgger remains T4.
+
+Run the cloud end-to-end smoke first:
 
 ```bash
-python -m scripts.train_forward_teacher_student --teacher-only --teacher-selection-mode robust --teacher-disturbances --teacher-steps 1000000 --teacher-evals 6 --teacher-minibatches 8 --teacher-learning-rate 2e-5 --teacher-entropy-cost 1e-4 --teacher-updates-per-batch 1 --residual-scale-multiplier 0.25 --residual-filter-alpha 0.15 --penalty-residual 0.1 --penalty-residual-rate 0.05 --strict-acceptance --out mjx_runs/teacher_t2a_seed0
+python -m scripts.distill_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --smoke --out mjx_runs/student_t3_bc_smoke_seed0
 ```
 
-Only after the nominal/disturbed dual gate passes should BC and DAgger run.
+Smoke is an interface and compilation check only; 20 BC updates are not enough to judge
+Student quality. It should reach `stage=t3_acceptance` and save an artifact even if
+`accepted=False`.
 
-## 10. Commands And Workflow Notes
+After smoke succeeds, run full T3:
+
+```bash
+python -m scripts.distill_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --out mjx_runs/student_t3_bc_seed0 --save-dataset --strict-acceptance
+```
+
+Read the compact terminal output in this order:
+
+1. `stage=t3_teacher` confirms the frozen PPO Teacher and selected step.
+2. `stage=t3_dataset_plan` confirms the nominal/disturbed sample split.
+3. `stage=student_bc_result` gives nominal and disturbed Student metrics.
+4. `stage=student_bc_retention` gives Student-minus-Teacher deltas.
+5. `stage=t3_acceptance` is the T3 decision.
+
+Only after `accepted=True` should T4 DAgger begin.
+
+## 11. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -306,4 +341,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after T2a are `83 passed`.
+local tests after the T3 implementation are `93 passed`.
