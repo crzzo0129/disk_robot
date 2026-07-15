@@ -35,11 +35,22 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-batch-size", type=int, default=256)
     parser.add_argument("--teacher-minibatches", type=int, default=32)
     parser.add_argument("--teacher-updates-per-batch", type=int, default=4)
+    parser.add_argument(
+        "--residual-scale-multiplier",
+        type=float,
+        default=1.0,
+        help="Multiply the per-joint teacher residual limits without changing IK or student actions.",
+    )
     parser.add_argument("--teacher-restore", type=Path, default=None)
     parser.add_argument("--min-accepted-teacher-vx", type=float, default=None)
     parser.add_argument("--max-accepted-teacher-failure-rate", type=float, default=0.10)
     parser.add_argument("--max-accepted-teacher-velocity-error", type=float, default=0.03)
     parser.add_argument("--max-accepted-teacher-roll-pitch-rate", type=float, default=0.50)
+    parser.add_argument(
+        "--allow-ik-baseline-teacher",
+        action="store_true",
+        help="Allow distillation from zero-residual IK when PPO is not the selected teacher.",
+    )
 
     parser.add_argument("--rollout-envs", type=int, default=256)
     parser.add_argument("--rollout-horizon", type=int, default=500)
@@ -59,6 +70,11 @@ def parse_args(argv=None):
     parser.add_argument("--max-accepted-velocity-error", type=float, default=0.03)
     parser.add_argument("--max-accepted-roll-pitch-rate", type=float, default=0.60)
     parser.add_argument("--strict-acceptance", action="store_true")
+    parser.add_argument(
+        "--teacher-only",
+        action="store_true",
+        help="Stop after teacher selection and acceptance without BC or DAgger.",
+    )
 
     parser.add_argument("--ik-samples", type=int, default=256)
     parser.add_argument(
@@ -175,6 +191,15 @@ def _teacher_progress(step, metrics, command_vx):
     print(f"stage=teacher_eval step={int(step):,} {values}", flush=True)
 
 
+def _teacher_selection_score(report):
+    return (
+        report.get("reward_per_step", 0.0)
+        - 2.0 * report.get("failure_rate", 0.0)
+        - 0.5 * report.get("mean_velocity_error", 0.0)
+        - 0.1 * report.get("mean_roll_pitch_rate_rms", 0.0)
+    )
+
+
 def _student_init(jax, jp, key, layer_sizes):
     keys = jax.random.split(key, len(layer_sizes) - 1)
     params = []
@@ -282,6 +307,7 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         next_state = step_batch(current_state, action)
         alive = 1.0 - current_state.done
         return (next_state, policy_key), (
+            next_state.reward,
             next_state.metrics["velocity_x"],
             next_state.metrics["velocity_error"],
             next_state.metrics["roll_pitch_rate_rms"],
@@ -295,12 +321,13 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         (),
         length=horizon,
     )
-    vx, velocity_error, roll_pitch_rate, failed, alive = [
+    reward, vx, velocity_error, roll_pitch_rate, failed, alive = [
         np.asarray(jax.device_get(value)) for value in values
     ]
     denominator = max(float(np.sum(alive)), 1.0)
     mean_velocity_x = float(np.sum(vx * alive) / denominator)
     return {
+        "reward_per_step": float(np.sum(reward * alive) / denominator),
         "mean_velocity_x": mean_velocity_x,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
         "mean_velocity_error": abs(mean_velocity_x - env.config.command_vx),
@@ -461,6 +488,8 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
 def main(argv=None):
     args = parse_args(argv)
     _resolve_acceptance_thresholds(args)
+    if not 0.0 < args.residual_scale_multiplier <= 1.0:
+        raise SystemExit("--residual-scale-multiplier must be in (0, 1]")
     if args.smoke:
         args.teacher_steps = min(args.teacher_steps, 20_000)
         args.teacher_envs = min(args.teacher_envs, 64)
@@ -509,6 +538,10 @@ def main(argv=None):
         actuator_kd=args.kd,
         torque_limit=args.torque_limit,
         startup_blend_steps=args.startup_steps,
+        residual_scale=tuple(
+            value * args.residual_scale_multiplier
+            for value in ForwardTeacherStudentConfig().residual_scale
+        ),
     )
     reference_spec, reference_source = _resolve_reference_spec(args)
     print(
@@ -569,25 +602,20 @@ def main(argv=None):
             _resolve_latest_checkpoint(args.teacher_restore)
         )
 
-    best_teacher = {"score": None, "step": 0, "params": None, "metrics": {}}
+    best_teacher = {
+        "score": None,
+        "step": 0,
+        "params": None,
+        "summary": {},
+        "summaries_by_step": {},
+        "pending_params": {},
+    }
 
-    def progress_fn(step, metrics):
-        best_teacher["metrics"] = metrics
-        _teacher_progress(step, metrics, config.command_vx)
-
-    def policy_params_fn(step, make_policy, params):
-        del make_policy
-        summary = _teacher_eval_summary(best_teacher["metrics"], config.command_vx)
+    def consider_teacher(step, params, summary):
         reward_per_step = summary.get("reward_per_step")
         if reward_per_step is None:
             return
-        failure_rate = summary.get("failure_rate", 0.0)
-        score = (
-            reward_per_step
-            - 2.0 * failure_rate
-            - 0.5 * summary.get("mean_velocity_error", 0.0)
-            - 0.1 * summary.get("mean_roll_pitch_rate_rms", 0.0)
-        )
+        score = _teacher_selection_score(summary)
         if best_teacher["score"] is None or score > best_teacher["score"]:
             best_teacher.update(
                 score=score,
@@ -595,16 +623,34 @@ def main(argv=None):
                 params=params,
                 summary=summary,
             )
-            model_io.save_params(teacher_dir / "params_best", params)
+            model_io.save_params(teacher_dir / "params_ppo_best", params)
             print(
                 f"stage=teacher_best step={int(step):,} score={score:.5f} "
                 f"mean_velocity_x={summary.get('mean_velocity_x', float('nan')):.5f} "
                 f"mean_velocity_error={summary.get('mean_velocity_error', float('nan')):.5f} "
                 f"mean_roll_pitch_rate_rms="
                 f"{summary.get('mean_roll_pitch_rate_rms', float('nan')):.5f} "
-                f"failure_rate={failure_rate:.5f}",
+                f"failure_rate={summary.get('failure_rate', 0.0):.5f}",
                 flush=True,
             )
+
+    def progress_fn(step, metrics):
+        step = int(step)
+        _teacher_progress(step, metrics, config.command_vx)
+        summary = _teacher_eval_summary(metrics, config.command_vx)
+        best_teacher["summaries_by_step"][step] = summary
+        params = best_teacher["pending_params"].pop(step, None)
+        if params is not None:
+            consider_teacher(step, params, summary)
+
+    def policy_params_fn(step, make_policy, params):
+        del make_policy
+        step = int(step)
+        summary = best_teacher["summaries_by_step"].get(step)
+        if summary is None:
+            best_teacher["pending_params"][step] = params
+        else:
+            consider_teacher(step, params, summary)
 
     if "policy_params_fn" in ppo_parameters:
         checkpoint_kwargs["policy_params_fn"] = policy_params_fn
@@ -640,28 +686,77 @@ def main(argv=None):
         **checkpoint_kwargs,
     )
     model_io.save_params(teacher_dir / "params_final", teacher_params)
-    selected_teacher_params = (
+    ppo_teacher_params = (
         best_teacher["params"] if best_teacher["params"] is not None else teacher_params
     )
-    selected_step = (
+    ppo_selected_step = (
         best_teacher["step"] if best_teacher["params"] is not None else args.teacher_steps
     )
-    model_io.save_params(teacher_dir / "params", selected_teacher_params)
-    teacher_policy = make_teacher_policy(selected_teacher_params, deterministic=True)
-    print(
-        f"stage=teacher_train status=done selected_step={selected_step:,} "
-        f"saved={teacher_dir / 'params'}",
-        flush=True,
-    )
-
-    teacher_report = _evaluate_teacher(
+    ppo_teacher_policy = make_teacher_policy(ppo_teacher_params, deterministic=True)
+    ppo_report = _evaluate_teacher(
         jax,
-        teacher_env,
-        teacher_policy,
+        teacher_eval_env,
+        ppo_teacher_policy,
         args.seed + 15_000,
         args.eval_envs,
         args.episode_length,
     )
+    baseline_selection_report = _evaluate_teacher(
+        jax,
+        teacher_eval_env,
+        zero_teacher_policy,
+        args.seed + 15_000,
+        args.eval_envs,
+        args.episode_length,
+    )
+    ppo_score = _teacher_selection_score(ppo_report)
+    baseline_score = _teacher_selection_score(baseline_selection_report)
+    ppo_preserves_baseline = (
+        ppo_report["mean_velocity_x"]
+        >= baseline_selection_report["mean_velocity_x"] - 0.01
+        and ppo_report["failure_rate"]
+        <= baseline_selection_report["failure_rate"] + 0.02
+        and ppo_report["mean_roll_pitch_rate_rms"]
+        <= baseline_selection_report["mean_roll_pitch_rate_rms"] + 0.10
+    )
+    if baseline_score >= ppo_score or not ppo_preserves_baseline:
+        selected_source = "ik_baseline"
+        selected_step = 0
+        teacher_policy = zero_teacher_policy
+        teacher_report = dict(baseline_selection_report)
+        selected_params_path = None
+    else:
+        selected_source = "ppo"
+        selected_step = ppo_selected_step
+        teacher_policy = ppo_teacher_policy
+        teacher_report = dict(ppo_report)
+        selected_params_path = teacher_dir / "params"
+        model_io.save_params(selected_params_path, ppo_teacher_params)
+
+    selection = {
+        "selected_source": selected_source,
+        "selected_step": selected_step,
+        "selected_score": max(ppo_score, baseline_score),
+        "ppo_step": ppo_selected_step,
+        "ppo_score": ppo_score,
+        "ppo_preserves_baseline": ppo_preserves_baseline,
+        "ppo_report": ppo_report,
+        "ik_baseline_score": baseline_score,
+        "ik_baseline_report": baseline_selection_report,
+    }
+    (teacher_dir / "selection.json").write_text(
+        json.dumps(selection, indent=2), encoding="utf-8"
+    )
+    (teacher_dir / "ppo_evaluation.json").write_text(
+        json.dumps(ppo_report, indent=2), encoding="utf-8"
+    )
+    print(
+        f"stage=teacher_selection source={selected_source} selected_step={selected_step:,} "
+        f"ppo_score={ppo_score:.5f} ik_baseline_score={baseline_score:.5f} "
+        f"saved={selected_params_path}",
+        flush=True,
+    )
+
     teacher_accepted = (
         teacher_report["mean_velocity_x"] >= args.min_accepted_teacher_vx
         and teacher_report["failure_rate"] <= args.max_accepted_teacher_failure_rate
@@ -670,6 +765,9 @@ def main(argv=None):
         and teacher_report["mean_roll_pitch_rate_rms"]
         <= args.max_accepted_teacher_roll_pitch_rate
     )
+    if selected_source != "ppo" and not args.allow_ik_baseline_teacher:
+        teacher_accepted = False
+        teacher_report["rejection_reason"] = "ppo_teacher_did_not_outperform_ik_baseline"
     teacher_report["accepted"] = teacher_accepted
     teacher_report["minimum_velocity_x"] = args.min_accepted_teacher_vx
     teacher_report["maximum_failure_rate"] = args.max_accepted_teacher_failure_rate
@@ -677,6 +775,7 @@ def main(argv=None):
     teacher_report["maximum_roll_pitch_rate_rms"] = (
         args.max_accepted_teacher_roll_pitch_rate
     )
+    teacher_report["selected_source"] = selected_source
     teacher_report["selected_step"] = selected_step
     (teacher_dir / "evaluation.json").write_text(
         json.dumps(teacher_report, indent=2), encoding="utf-8"
@@ -685,6 +784,13 @@ def main(argv=None):
     if args.strict_acceptance and not teacher_accepted:
         print("stage=pipeline_stopped reason=teacher_acceptance_failed", flush=True)
         raise SystemExit(2)
+    if args.teacher_only:
+        print(
+            f"stage=pipeline_done mode=teacher_only accepted={teacher_accepted} "
+            f"source={selected_source}",
+            flush=True,
+        )
+        return
 
     observations, labels = _collect_teacher_dataset(
         jax,
@@ -799,6 +905,8 @@ def main(argv=None):
         "config": asdict(config),
         "ik_reference": asdict(reference_spec),
         "ik_reference_source": reference_source,
+        "teacher_source": selected_source,
+        "teacher_selected_step": selected_step,
         "evaluation": report,
     }
     student_path = args.out / "student_policy.npz"

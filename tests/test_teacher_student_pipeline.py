@@ -25,6 +25,9 @@ def test_pipeline_smoke_and_stand_defaults_are_explicit():
     assert args.startup_steps == 25
     assert args.teacher_batch_size == 256
     assert args.teacher_minibatches == 32
+    assert args.residual_scale_multiplier == 1.0
+    assert not args.allow_ik_baseline_teacher
+    assert not args.teacher_only
 
 
 def test_pipeline_defaults_match_the_stable_ik_baseline():
@@ -105,8 +108,12 @@ def test_pipeline_produces_student_policy_and_evaluation_contract():
     assert '"stand_source": "xml:keyframe:stand"' in source
     assert "_collect_dagger_dataset" in source
     assert "policy_params_fn" in source
-    assert 'teacher_dir / "params_best"' in source
+    assert 'teacher_dir / "params_ppo_best"' in source
     assert 'teacher_dir / "ik_baseline_evaluation.json"' in source
+    assert 'teacher_dir / "selection.json"' in source
+    assert 'selected_source = "ik_baseline"' in source
+    assert '"ppo_teacher_did_not_outperform_ik_baseline"' in source
+    assert 'mode=teacher_only' in source
     assert '"mean_forward_distance"' in source
     assert 'make_forward_teacher_student_env(\n        "dagger"' in source
     assert 'make_forward_teacher_student_env(\n        "student"' in source
