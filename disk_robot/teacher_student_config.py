@@ -34,7 +34,7 @@ class ForwardTeacherStudentConfig:
     torque_limit: float = 3.0
 
     reward_velocity: float = 2.0
-    velocity_sigma: float = 0.0004
+    velocity_sigma: float = 0.01
     reward_progress: float = 1.0
     reward_yaw: float = 0.4
     yaw_sigma: float = 0.10

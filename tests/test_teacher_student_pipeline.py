@@ -51,7 +51,7 @@ def test_pipeline_defaults_match_the_stable_ik_baseline():
     assert source["mode"] == "command"
     assert args.teacher_learning_rate == 1e-4
     assert args.teacher_entropy_cost == 1e-3
-    assert ForwardTeacherStudentConfig().velocity_sigma == 0.0004
+    assert ForwardTeacherStudentConfig().velocity_sigma == 0.01
 
 
 def test_pipeline_manual_ik_mode_keeps_explicit_parameters():
@@ -65,6 +65,22 @@ def test_pipeline_manual_ik_mode_keeps_explicit_parameters():
     assert reference.frequency == 0.9
     assert reference.stride_length == 0.05
     assert source["mode"] == "manual"
+
+
+def test_teacher_summary_separates_net_and_instantaneous_velocity_error():
+    from scripts.train_forward_teacher_student import _teacher_eval_summary
+
+    summary = _teacher_eval_summary(
+        {
+            "eval/avg_episode_length": 500.0,
+            "eval/episode_velocity_x": 0.0837 * 500.0,
+            "eval/episode_velocity_error": 0.0794 * 500.0,
+        },
+        command_vx=0.08,
+    )
+
+    assert abs(summary["mean_velocity_error"] - 0.0037) < 1e-8
+    assert abs(summary["mean_instantaneous_velocity_error"] - 0.0794) < 1e-8
 
 
 def test_teacher_env_has_privileged_residual_and_student_modes():

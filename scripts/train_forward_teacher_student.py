@@ -147,7 +147,7 @@ def _metric_scalar(value):
         return None
 
 
-def _teacher_eval_summary(metrics):
+def _teacher_eval_summary(metrics, command_vx):
     episode_length = _metric_scalar(metrics.get("eval/avg_episode_length"))
     if episode_length is None or episode_length <= 0.0:
         return {}
@@ -155,7 +155,7 @@ def _teacher_eval_summary(metrics):
     for output_name, metric_name in (
         ("reward_per_step", "eval/episode_reward"),
         ("mean_velocity_x", "eval/episode_velocity_x"),
-        ("mean_velocity_error", "eval/episode_velocity_error"),
+        ("mean_instantaneous_velocity_error", "eval/episode_velocity_error"),
         ("mean_roll_pitch_rate_rms", "eval/episode_roll_pitch_rate_rms"),
     ):
         value = _metric_scalar(metrics.get(metric_name))
@@ -164,11 +164,13 @@ def _teacher_eval_summary(metrics):
     failed = _metric_scalar(metrics.get("eval/episode_failed"))
     if failed is not None:
         summary["failure_rate"] = failed
+    if "mean_velocity_x" in summary:
+        summary["mean_velocity_error"] = abs(summary["mean_velocity_x"] - command_vx)
     return summary
 
 
-def _teacher_progress(step, metrics):
-    summary = _teacher_eval_summary(metrics)
+def _teacher_progress(step, metrics, command_vx):
+    summary = _teacher_eval_summary(metrics, command_vx)
     values = " ".join(f"{name}={value:.5f}" for name, value in summary.items())
     print(f"stage=teacher_eval step={int(step):,} {values}", flush=True)
 
@@ -297,10 +299,14 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         np.asarray(jax.device_get(value)) for value in values
     ]
     denominator = max(float(np.sum(alive)), 1.0)
+    mean_velocity_x = float(np.sum(vx * alive) / denominator)
     return {
-        "mean_velocity_x": float(np.sum(vx * alive) / denominator),
+        "mean_velocity_x": mean_velocity_x,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
-        "mean_velocity_error": float(np.sum(velocity_error * alive) / denominator),
+        "mean_velocity_error": abs(mean_velocity_x - env.config.command_vx),
+        "mean_instantaneous_velocity_error": float(
+            np.sum(velocity_error * alive) / denominator
+        ),
         "mean_roll_pitch_rate_rms": float(np.sum(roll_pitch_rate * alive) / denominator),
         "failure_rate": float(np.mean(np.max(failed, axis=0))),
         "mean_alive_steps": float(np.mean(np.sum(alive, axis=0))),
@@ -437,10 +443,14 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
     ]
     denominator = max(float(np.sum(alive)), 1.0)
     failed_any = np.max(failed, axis=0)
+    mean_velocity_x = float(np.sum(vx * alive) / denominator)
     return {
-        "mean_velocity_x": float(np.sum(vx * alive) / denominator),
+        "mean_velocity_x": mean_velocity_x,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
-        "mean_velocity_error": float(np.sum(velocity_error * alive) / denominator),
+        "mean_velocity_error": abs(mean_velocity_x - env.config.command_vx),
+        "mean_instantaneous_velocity_error": float(
+            np.sum(velocity_error * alive) / denominator
+        ),
         "mean_roll_pitch_rate_rms": float(np.sum(roll_pitch_rate * alive) / denominator),
         "mean_disk_contacts": float(np.sum(disk_contact * alive) / denominator),
         "failure_rate": float(np.mean(failed_any)),
@@ -563,11 +573,11 @@ def main(argv=None):
 
     def progress_fn(step, metrics):
         best_teacher["metrics"] = metrics
-        _teacher_progress(step, metrics)
+        _teacher_progress(step, metrics, config.command_vx)
 
     def policy_params_fn(step, make_policy, params):
         del make_policy
-        summary = _teacher_eval_summary(best_teacher["metrics"])
+        summary = _teacher_eval_summary(best_teacher["metrics"], config.command_vx)
         reward_per_step = summary.get("reward_per_step")
         if reward_per_step is None:
             return

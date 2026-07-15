@@ -93,6 +93,8 @@ previous residual            12
 
 世界坐标前向速度和净位移用于 reward、评估和防止“前后摇晃刷速度”，不输入 Student actor。机身坐标速度仍作为诊断量输出。
 
+评估同时报告两种速度误差。`mean_velocity_error` 是 `|mean_velocity_x-command_vx|`，用于最终验收；`mean_instantaneous_velocity_error` 是逐控制步 `|vx(t)-command_vx|` 的平均值，用于观察 trot 周期内的速度脉动，不直接作为验收门槛。
+
 ## 5. 当前 IK reference
 
 默认参数由 `command_vx` 通过候选结构的实测标定生成：
@@ -161,6 +163,7 @@ q_target = q_stand
 - `mean_velocity_x >= 0.06 m/s`
 - `failure_rate <= 0.10`
 - `mean_velocity_error <= 0.03 m/s`
+- `mean_instantaneous_velocity_error` 仅作平滑性诊断
 - `mean_roll_pitch_rate_rms <= 0.50 rad/s`
 
 当前 Student 门槛：
@@ -168,6 +171,7 @@ q_target = q_stand
 - `mean_velocity_x >= 0.06 m/s`
 - `failure_rate <= 0.10`
 - `mean_velocity_error <= 0.03 m/s`
+- `mean_instantaneous_velocity_error` 仅作平滑性诊断
 - `mean_roll_pitch_rate_rms <= 0.60 rad/s`
 
 这些只是第一阶段低速前进门槛。正式判断还要查看 `mean_forward_distance`、世界速度与 body-frame 速度差异、圆盘触地率、动作饱和和视频。单独达到平均速度不能证明 gait 可用。
