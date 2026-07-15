@@ -19,7 +19,7 @@ q_target = q_stand + action_scale * a
 
 ## 当前到长期目标的路线
 
-1. **低速可行性**：在 `0.03 m/s` 固定前进任务上验证结构、IK、Teacher 和 Student 蒸馏链路。
+1. **低速可行性**：在 `0.08 m/s` 固定前进任务上验证结构、速度标定 IK、Teacher 和 Student 蒸馏链路。
 2. **Command-conditioned IK**：让步频、步长、抬脚高度等随 `[vx, vy, wz]` 变化，而不是只使用一个固定周期。
 3. **锚点退火**：逐步减小 IK reference 权重，同时扩大策略的完整位置动作范围。
 4. **Command curriculum**：依次加入更高前进速度、停止、后退、横移和偏航，保留旧 command 分布防止遗忘。

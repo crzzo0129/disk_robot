@@ -43,15 +43,15 @@ The XML keeps 12 independent position actuators. Paired front/rear flex control 
 
 ## Walk Training Status
 
-The active model is `assets/pupper_v3_disk_visual.xml`. The forward training path uses a
+The active training model is `assets/pupper_v3_disk_structure_candidate.xml`. The forward training path uses a
 symmetric IK reference, a privileged residual PPO teacher, behavior cloning, and DAgger to
 produce a student that runs without IK or gait phase inputs.
 
 Run the complete pipeline in the offline Linux `mjx312` environment:
 
 ```bash
-python -m scripts.train_forward_teacher_student --smoke --out mjx_runs/forward_ts_smoke
-python -m scripts.train_forward_teacher_student --out mjx_runs/forward_ts --strict-acceptance
+python -m scripts.train_forward_teacher_student --smoke --out mjx_runs/forward_008_smoke
+python -m scripts.train_forward_teacher_student --out mjx_runs/forward_008_v1 --teacher-evals 21 --strict-acceptance
 ```
 
 The offline instance must already have the packages in `requirements-mjx.txt` available in

@@ -17,6 +17,7 @@ def test_pipeline_smoke_and_stand_defaults_are_explicit():
 
     assert args.smoke
     assert args.command_vx == 0.08
+    assert args.ik_speed_mode == "command"
     assert args.ik_frequency == 0.8
     assert args.ik_stride == 0.04
     assert args.kp == 10.0
@@ -28,20 +29,42 @@ def test_pipeline_smoke_and_stand_defaults_are_explicit():
 
 def test_pipeline_defaults_match_the_stable_ik_baseline():
     from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
-    from scripts.train_forward_teacher_student import parse_args
+    from scripts.train_forward_teacher_student import (
+        _resolve_acceptance_thresholds,
+        _resolve_reference_spec,
+        parse_args,
+    )
 
     args = parse_args([])
+    reference, source = _resolve_reference_spec(args)
+    _resolve_acceptance_thresholds(args)
 
-    assert args.command_vx == 0.03
-    assert args.min_accepted_teacher_vx == 0.02
-    assert args.min_accepted_vx == 0.02
-    assert args.max_accepted_teacher_velocity_error == 0.06
+    assert args.command_vx == 0.08
+    assert args.min_accepted_teacher_vx == 0.06
+    assert args.min_accepted_vx == 0.06
+    assert args.max_accepted_teacher_velocity_error == 0.03
     assert args.max_accepted_teacher_roll_pitch_rate == 0.50
-    assert args.max_accepted_velocity_error == 0.06
+    assert args.max_accepted_velocity_error == 0.03
     assert args.max_accepted_roll_pitch_rate == 0.60
+    assert reference.frequency == 1.2
+    assert 0.07 < reference.stride_length < 0.08
+    assert source["mode"] == "command"
     assert args.teacher_learning_rate == 1e-4
     assert args.teacher_entropy_cost == 1e-3
     assert ForwardTeacherStudentConfig().velocity_sigma == 0.0004
+
+
+def test_pipeline_manual_ik_mode_keeps_explicit_parameters():
+    from scripts.train_forward_teacher_student import _resolve_reference_spec, parse_args
+
+    args = parse_args(
+        ["--ik-speed-mode", "manual", "--ik-frequency", "0.9", "--ik-stride", "0.05"]
+    )
+    reference, source = _resolve_reference_spec(args)
+
+    assert reference.frequency == 0.9
+    assert reference.stride_length == 0.05
+    assert source["mode"] == "manual"
 
 
 def test_teacher_env_has_privileged_residual_and_student_modes():

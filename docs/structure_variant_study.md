@@ -11,9 +11,9 @@ disk_radius = 0.200 m
 controller  = Kp 10.0, Kd 0.4, torque limit 3 Nm
 ```
 
-It is stored separately as `assets/pupper_v3_disk_structure_candidate.xml`. The active
-training model remains `assets/pupper_v3_disk_visual.xml` until the candidate is visually
-checked in `stand`, `folded`, and rolling motions.
+It is stored as `assets/pupper_v3_disk_structure_candidate.xml` and is now the default
+forward teacher-student training model. The original visual XML remains available as the
+unscaled geometry reference.
 
 ## Model Correction
 

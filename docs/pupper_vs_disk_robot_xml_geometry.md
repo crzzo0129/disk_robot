@@ -4,9 +4,9 @@
 
 - Pupper 风格圆盘机身模型：`disk_robot/assets/pupper_v3_disk_visual.xml`
 - 历史抽象训练模型：`disk_robot/assets/disk_quadruped_extreme_train.xml`
-- 当前训练模型：`disk_robot/assets/pupper_v3_disk_visual.xml`
+- 当前训练模型：`disk_robot/assets/pupper_v3_disk_structure_candidate.xml`
 
-> 本文中的尺寸表用于解释 Pupper 与早期抽象 disk 模型的几何差异，不再定义训练入口。当前 CPU/MJX 环境只默认加载 `pupper_v3_disk_visual.xml`。
+> 本文中的尺寸表用于解释 Pupper 与早期抽象 disk 模型的几何差异，不再定义训练入口。Teacher-Student 训练默认加载结构候选 XML。
 
 我也顺手检查了 `disk_robot/assets/disk_quadruped_extreme.xml`。它与训练版最相关的几何差别是：非训练版髋关节锚点使用 `x = +/-0.08 m`，训练版使用 `x = +/-0.10 m`。
 
