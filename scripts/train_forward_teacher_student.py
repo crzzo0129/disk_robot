@@ -412,6 +412,15 @@ def _save_student_policy(path: Path, params, obs_mean, obs_std, metadata):
     path.with_suffix(".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
+def _sample_dataset_rows(observations, labels, valid, take, seed):
+    observations = observations[valid]
+    labels = labels[valid]
+    if take >= len(observations):
+        return observations, labels
+    indices = np.random.default_rng(seed).choice(len(observations), size=take, replace=False)
+    return observations[indices], labels[indices]
+
+
 def _collect_teacher_dataset(
     jax,
     jp,
@@ -456,11 +465,16 @@ def _collect_teacher_dataset(
         obs = np.asarray(jax.device_get(obs)).reshape(-1, obs.shape[-1])
         target = np.asarray(jax.device_get(target)).reshape(-1, target.shape[-1])
         valid = np.asarray(jax.device_get(valid)).reshape(-1) > 0.5
-        obs = obs[valid]
-        target = target[valid]
-        take = min(len(obs), requested_samples - collected)
-        observations.append(obs[:take])
-        labels.append(target[:take])
+        take = min(int(np.sum(valid)), requested_samples - collected)
+        obs, target = _sample_dataset_rows(
+            obs,
+            target,
+            valid,
+            take,
+            seed + 1_000_000 + batch_index,
+        )
+        observations.append(obs)
+        labels.append(target)
         collected += take
         batch_index += 1
         print(f"stage=teacher_dataset samples={collected:,}/{requested_samples:,}", flush=True)
@@ -657,11 +671,16 @@ def _collect_dagger_dataset(
         obs = np.asarray(jax.device_get(obs)).reshape(-1, obs.shape[-1])
         target = np.asarray(jax.device_get(target)).reshape(-1, target.shape[-1])
         valid = np.asarray(jax.device_get(valid)).reshape(-1) > 0.5
-        obs = obs[valid]
-        target = target[valid]
-        take = min(len(obs), requested_samples - collected)
-        observations.append(obs[:take])
-        labels.append(target[:take])
+        take = min(int(np.sum(valid)), requested_samples - collected)
+        obs, target = _sample_dataset_rows(
+            obs,
+            target,
+            valid,
+            take,
+            seed + 1_000_000 + batch_index,
+        )
+        observations.append(obs)
+        labels.append(target)
         collected += take
         batch_index += 1
         print(f"stage=dagger_dataset samples={collected:,}/{requested_samples:,}", flush=True)

@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import numpy as np
+
 
 def test_t3_entry_imports_without_jax_or_brax():
     import sys
@@ -45,6 +47,22 @@ def test_t3_reconstructs_the_accepted_teacher_environment():
     assert config.push_velocity_x == 0.6
     assert config.recovery_required_steps == 5
     assert config.residual_scale[0] == 0.025
+
+
+def test_dataset_subsampling_covers_the_full_rollout_and_keeps_labels_aligned():
+    from scripts.train_forward_teacher_student import _sample_dataset_rows
+
+    observations = np.arange(100, dtype=np.float32)[:, None]
+    labels = observations + 1_000.0
+    valid = np.ones(100, dtype=bool)
+    sampled_obs, sampled_labels = _sample_dataset_rows(
+        observations, labels, valid, take=20, seed=7
+    )
+
+    assert len(sampled_obs) == 20
+    assert np.all(sampled_labels == sampled_obs + 1_000.0)
+    assert np.max(sampled_obs) > 50
+    assert not np.array_equal(sampled_obs[:, 0], np.arange(20, dtype=np.float32))
 
 
 def test_t3_refuses_unaccepted_or_non_ppo_teacher(tmp_path):

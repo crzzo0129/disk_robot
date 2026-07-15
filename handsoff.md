@@ -294,6 +294,7 @@ T3 is implemented as a separate entry point, `scripts/distill_forward_student.py
 - reconstructs the exact Teacher config and IK reference from `run_config.json`;
 - loads `teacher/params` without running PPO or changing Teacher parameters;
 - collects a shuffled 50/50 nominal and disturbed demonstration dataset;
+- uniformly subsamples across each full rollout instead of truncating to early episode steps;
 - trains only the gait-free Student by behavior cloning;
 - evaluates Student separately in nominal and disturbed environments;
 - reports post-push error, recovery time, push coverage, and retention relative to Teacher;
@@ -341,4 +342,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T3 implementation are `93 passed`.
+local tests after the T3 implementation are `94 passed`.
