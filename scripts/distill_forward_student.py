@@ -270,11 +270,13 @@ def main(argv=None):
         import jax.numpy as jp
         import optax
         from brax.io import model as model_io
-        from brax.training import running_statistics
+        from brax.training.acme import running_statistics
         from brax.training.agents.ppo import networks as ppo_networks
     except ImportError as exc:
         raise SystemExit(
-            "Activate the offline mjx312 environment with jax, mujoco, brax, and optax installed."
+            "T3 could not import the MJX stack: "
+            f"{exc.name or exc}. Activate the offline mjx312 environment with jax, mujoco, "
+            "brax, and optax installed."
         ) from exc
 
     args.out.mkdir(parents=True, exist_ok=True)
