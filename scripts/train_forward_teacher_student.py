@@ -637,6 +637,7 @@ def _collect_dagger_dataset(
     env_count,
     horizon,
     requested_samples,
+    teacher_rollout_blend=0.0,
 ):
     reset_batch = jax.jit(jax.vmap(env.reset))
     step_batch = jax.jit(jax.vmap(env.step))
@@ -658,8 +659,12 @@ def _collect_dagger_dataset(
             student_action = student_policy(current_state.obs)
             teacher_residual, _ = teacher_policy(current_state.info["teacher_obs"], teacher_key)
             teacher_label = label_batch(current_state, teacher_residual)
+            rollout_action = (
+                (1.0 - teacher_rollout_blend) * student_action
+                + teacher_rollout_blend * teacher_label
+            )
             valid = 1.0 - current_state.done
-            next_state = step_batch(current_state, student_action)
+            next_state = step_batch(current_state, rollout_action)
             return (next_state, policy_key), (current_state.obs, teacher_label, valid)
 
         (_, _), (obs, target, valid) = jax.lax.scan(

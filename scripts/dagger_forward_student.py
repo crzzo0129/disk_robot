@@ -47,6 +47,8 @@ def parse_args(argv=None):
     parser.add_argument("--student-learning-rate", type=float, default=1e-4)
     parser.add_argument("--eval-envs", type=int, default=256)
     parser.add_argument("--save-dataset", action="store_true")
+    parser.add_argument("--teacher-rollout-blend-start", type=float, default=0.50)
+    parser.add_argument("--teacher-rollout-blend-end", type=float, default=0.20)
 
     parser.add_argument("--nominal-vx-tolerance", type=float, default=0.015)
     parser.add_argument("--nominal-failure-tolerance", type=float, default=0.05)
@@ -109,18 +111,23 @@ def _validate_bc_teacher_contract(artifact, teacher_run, teacher_evaluation, con
 
 def _student_score(nominal, disturbed):
     return (
-        nominal.get("reward_per_step", 0.0)
-        + disturbed.get("reward_per_step", 0.0)
-        - 10.0 * nominal.get("mean_velocity_error", 0.0)
-        - 10.0 * disturbed.get("mean_velocity_error", 0.0)
-        - 3.0 * nominal.get("failure_rate", 0.0)
-        - 3.0 * disturbed.get("failure_rate", 0.0)
+        -40.0 * nominal.get("mean_velocity_error", 0.0)
+        - 40.0 * disturbed.get("mean_velocity_error", 0.0)
+        - 5.0 * nominal.get("failure_rate", 0.0)
+        - 5.0 * disturbed.get("failure_rate", 0.0)
         - 0.5 * nominal.get("mean_roll_pitch_rate_rms", 0.0)
         - 0.5 * disturbed.get("mean_roll_pitch_rate_rms", 0.0)
         - disturbed.get("mean_post_push_velocity_error", 0.0)
         - 0.5 * disturbed.get("mean_recovery_time", 0.0)
         - disturbed.get("mean_disk_contacts", 0.0)
     )
+
+
+def _teacher_rollout_blend(round_index, total_rounds, start, end):
+    if total_rounds <= 1:
+        return float(start)
+    fraction = (round_index - 1) / (total_rounds - 1)
+    return float(start + fraction * (end - start))
 
 
 def _evaluate_round(
@@ -235,6 +242,10 @@ def main(argv=None):
         raise SystemExit("--dagger-samples must be at least 2")
     if not 0.0 < args.nominal_fraction < 1.0:
         raise SystemExit("--nominal-fraction must be in (0, 1)")
+    if not 0.0 <= args.teacher_rollout_blend_end <= args.teacher_rollout_blend_start <= 1.0:
+        raise SystemExit(
+            "Teacher rollout blend must satisfy 0 <= end <= start <= 1"
+        )
     if min(args.rollout_envs, args.rollout_horizon, args.dagger_updates, args.eval_envs) < 1:
         raise SystemExit("rollout, update, and evaluation counts must be positive")
 
@@ -351,17 +362,25 @@ def main(argv=None):
         0,
     )
     initial_report["dataset_samples"] = int(len(all_observations))
+    initial_report["teacher_rollout_blend"] = 0.0
     round_reports.append(initial_report)
     best_report = initial_report
     best_params = student_params
 
     for round_index in range(1, args.dagger_rounds + 1):
+        teacher_blend = _teacher_rollout_blend(
+            round_index,
+            args.dagger_rounds,
+            args.teacher_rollout_blend_start,
+            args.teacher_rollout_blend_end,
+        )
         nominal_samples = int(round(args.dagger_samples * args.nominal_fraction))
         nominal_samples = min(max(nominal_samples, 1), args.dagger_samples - 1)
         disturbed_samples = args.dagger_samples - nominal_samples
         print(
             f"stage=t4_dataset_plan round={round_index} total={args.dagger_samples:,} "
-            f"nominal={nominal_samples:,} disturbed={disturbed_samples:,}",
+            f"nominal={nominal_samples:,} disturbed={disturbed_samples:,} "
+            f"teacher_blend={teacher_blend:.2f}",
             flush=True,
         )
         print(
@@ -380,6 +399,7 @@ def main(argv=None):
             args.rollout_envs,
             args.rollout_horizon,
             nominal_samples,
+            teacher_blend,
         )
         print(
             f"stage=t4_dataset round={round_index} source=disturbed status=collecting",
@@ -397,6 +417,7 @@ def main(argv=None):
             args.rollout_envs,
             args.rollout_horizon,
             disturbed_samples,
+            teacher_blend,
         )
         all_observations = np.concatenate(
             (all_observations, nominal_obs, disturbed_obs)
@@ -435,6 +456,7 @@ def main(argv=None):
             round_index,
         )
         report["dataset_samples"] = int(len(all_observations))
+        report["teacher_rollout_blend"] = float(teacher_blend)
         round_reports.append(report)
         round_path = args.out / f"student_policy_dagger_round_{round_index}.npz"
         _save_student_policy(

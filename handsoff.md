@@ -345,32 +345,55 @@ rollout leaves that dataset and degrades. More BC updates on the same fixed data
 right next step. This is the intended trigger for T4 DAgger, not evidence that the accepted
 Teacher should be retrained.
 
-## 11. Current Task: T4 DAgger Closed-Loop Correction
+## 11. T4 Pure-Student DAgger Result: Failed By Phase Collapse
 
-T4 is implemented as `scripts/dagger_forward_student.py`. It:
+The first formal T4 run used pure Student rollouts. Both DAgger rounds converged to a stable
+standing policy:
+
+```text
+round 1 nominal/disturbed vx    -0.0007 / -0.0005
+round 2 nominal/disturbed vx    -0.0008 / -0.0009
+round 2 roll/pitch rate RMS      0.0045 / 0.0135
+round 2 accepted                 False
+```
+
+The DAgger supervised loss plateaued around `0.02`, versus `0.000006` for T3 BC. Once the
+Student stands still, nearly identical phase-free Student observations receive different
+cyclic labels as the privileged Teacher phase advances. MSE averages those conflicting labels
+toward the stand pose. More pure-Student DAgger rounds will reinforce this collapse.
+
+The old fallback score also favored standing because the environment gives standing roughly
+`1.6` reward per step. T4 fallback selection now ignores reward and strongly prioritizes
+velocity retention. Do not deploy `mjx_runs/student_t4_dagger_seed0/student_policy_dagger.npz`.
+
+## 12. Current Task: T4b Phase-Preserving DAgger
+
+`scripts/dagger_forward_student.py` now:
 
 - loads the frozen accepted Teacher and the existing T3 Student instead of reinitializing;
 - requires the T3 dataset saved by `--save-dataset`;
-- rolls out the current Student in both nominal and disturbed environments;
+- rolls out in both nominal and disturbed environments with an annealed Teacher-action blend;
 - asks the Teacher to label the states actually visited by the Student;
 - aggregates new labels with the original BC dataset;
 - evaluates every DAgger round and saves each round separately;
 - selects an accepted round first, otherwise the highest-scoring round;
+- uses no Teacher blend during evaluation or in the deployed Student;
 - never updates or overwrites Teacher or T3 artifacts.
 
-Run the cloud smoke first:
+Run a new cloud smoke without overwriting the failed T4 run:
 
 ```bash
-python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --smoke --out mjx_runs/student_t4_dagger_smoke_seed0
+python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --smoke --out mjx_runs/student_t4b_dagger_smoke_seed0
 ```
 
-If smoke reaches `stage=t4_acceptance`, run formal T4:
+If smoke reaches `stage=t4_acceptance`, formal T4b should use three rounds with blend
+`0.50 -> 0.30 -> 0.10`:
 
 ```bash
-python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --out mjx_runs/student_t4_dagger_seed0 --save-dataset --strict-acceptance
+python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --dagger-rounds 3 --teacher-rollout-blend-start 0.5 --teacher-rollout-blend-end 0.1 --out mjx_runs/student_t4b_dagger_seed0 --save-dataset --strict-acceptance
 ```
 
-## 12. Commands And Workflow Notes
+## 13. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -385,4 +408,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T4 fallback-selection fix are `100 passed`.
+local tests after the T4b phase-preserving collection change are `101 passed`.
