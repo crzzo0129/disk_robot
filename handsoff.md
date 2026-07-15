@@ -366,7 +366,14 @@ The old fallback score also favored standing because the environment gives stand
 `1.6` reward per step. T4 fallback selection now ignores reward and strongly prioritizes
 velocity retention. Do not deploy `mjx_runs/student_t4_dagger_seed0/student_policy_dagger.npz`.
 
-## 12. Current Task: T4b Phase-Preserving DAgger
+## 12. T4b Phase-Preserving DAgger Smoke: Update Still Too Aggressive
+
+The T4b smoke used `teacher_blend=0.50`, but only 20 updates at learning rate `1e-4`
+reduced nominal/disturbed velocity from `0.0340/0.0303` to `0.0036/-0.0009`. The corrected
+fallback selector retained round 0, so no collapsed policy was selected. Phase-preserving
+collection alone is insufficient when each supervised update can move the policy this far.
+
+## 13. Current Task: T4c Conservative Phase-Preserving DAgger
 
 `scripts/dagger_forward_student.py` now:
 
@@ -375,25 +382,30 @@ velocity retention. Do not deploy `mjx_runs/student_t4_dagger_seed0/student_poli
 - rolls out in both nominal and disturbed environments with an annealed Teacher-action blend;
 - asks the Teacher to label the states actually visited by the Student;
 - aggregates new labels with the original BC dataset;
+- anchors each round to that round's starting Student action function;
+- uses a `1e-5` default learning rate and configurable `--anchor-weight` (default `1.0`);
 - evaluates every DAgger round and saves each round separately;
 - selects an accepted round first, otherwise the highest-scoring round;
 - uses no Teacher blend during evaluation or in the deployed Student;
 - never updates or overwrites Teacher or T3 artifacts.
 
-Run a new cloud smoke without overwriting the failed T4 run:
+Run a new cloud smoke without overwriting T4/T4b:
 
 ```bash
-python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --smoke --out mjx_runs/student_t4b_dagger_smoke_seed0
+python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --smoke --out mjx_runs/student_t4c_conservative_smoke_seed0
 ```
 
-If smoke reaches `stage=t4_acceptance`, formal T4b should use three rounds with blend
-`0.50 -> 0.30 -> 0.10`:
+Do not start a formal run merely because the smoke reaches the final stage. Round 1 pure-Student
+velocity must also remain close to round 0. If conservative smoke still collapses toward zero
+velocity, stop tuning DAgger and choose explicit phase input or a recurrent Student.
+
+If velocity is retained, formal T4c should use three rounds with blend `0.50 -> 0.30 -> 0.10`:
 
 ```bash
-python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --dagger-rounds 3 --teacher-rollout-blend-start 0.5 --teacher-rollout-blend-end 0.1 --out mjx_runs/student_t4b_dagger_seed0 --save-dataset --strict-acceptance
+python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --dagger-rounds 3 --teacher-rollout-blend-start 0.5 --teacher-rollout-blend-end 0.1 --out mjx_runs/student_t4c_conservative_seed0 --save-dataset --strict-acceptance
 ```
 
-## 13. Commands And Workflow Notes
+## 14. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -408,4 +420,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T4b phase-preserving collection change are `101 passed`.
+local tests after the T4c conservative update change are `101 passed`.

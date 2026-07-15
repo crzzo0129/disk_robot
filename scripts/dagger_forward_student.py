@@ -44,7 +44,8 @@ def parse_args(argv=None):
     parser.add_argument("--rollout-horizon", type=int, default=500)
     parser.add_argument("--dagger-updates", type=int, default=5_000)
     parser.add_argument("--student-batch-size", type=int, default=1024)
-    parser.add_argument("--student-learning-rate", type=float, default=1e-4)
+    parser.add_argument("--student-learning-rate", type=float, default=1e-5)
+    parser.add_argument("--anchor-weight", type=float, default=1.0)
     parser.add_argument("--eval-envs", type=int, default=256)
     parser.add_argument("--save-dataset", action="store_true")
     parser.add_argument("--teacher-rollout-blend-start", type=float, default=0.50)
@@ -248,6 +249,8 @@ def main(argv=None):
         )
     if min(args.rollout_envs, args.rollout_horizon, args.dagger_updates, args.eval_envs) < 1:
         raise SystemExit("rollout, update, and evaluation counts must be positive")
+    if args.anchor_weight < 0.0:
+        raise SystemExit("--anchor-weight must be non-negative")
 
     teacher_run, teacher_run_config, teacher_evaluation, _, params_path = (
         _load_accepted_teacher_run(args.teacher_run)
@@ -425,6 +428,7 @@ def main(argv=None):
         all_labels = np.concatenate((all_labels, nominal_labels, disturbed_labels)).astype(
             np.float32, copy=False
         )
+        round_anchor_params = student_params
         student_params = _train_student(
             jax,
             jp,
@@ -439,6 +443,8 @@ def main(argv=None):
             args.student_learning_rate,
             args.seed + 80_000 + round_index,
             f"student_dagger_{round_index}",
+            round_anchor_params,
+            args.anchor_weight,
         )
         report = _evaluate_round(
             jax,

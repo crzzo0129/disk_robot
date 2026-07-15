@@ -18,7 +18,8 @@ def test_t4_entry_imports_without_jax_or_brax():
     )
     assert args.dagger_rounds == 2
     assert args.dagger_samples == 65_536
-    assert args.student_learning_rate == 1e-4
+    assert args.student_learning_rate == 1e-5
+    assert args.anchor_weight == 1.0
     assert args.teacher_rollout_blend_start == 0.5
     assert args.teacher_rollout_blend_end == 0.2
 
@@ -131,6 +132,8 @@ def test_t4_uses_student_rollouts_and_frozen_teacher_labels():
 
     assert "_collect_dagger_dataset" in source
     assert "teacher_rollout_blend" in source
+    assert "round_anchor_params" in source
+    assert "args.anchor_weight" in source
     assert 'make_forward_teacher_student_env(\n        "dagger"' in source
     assert "ppo.train(" not in source
     assert '"stage": "T4_DAGGER"' in source

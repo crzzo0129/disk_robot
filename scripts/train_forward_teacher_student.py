@@ -592,6 +592,8 @@ def _train_student(
     learning_rate,
     seed,
     stage,
+    anchor_params=None,
+    anchor_weight=0.0,
 ):
     obs = jp.asarray(observations)
     target = jp.asarray(labels)
@@ -600,7 +602,14 @@ def _train_student(
 
     def loss_fn(current_params, batch_obs, batch_target):
         prediction = _normalized_student_apply(jp, current_params, batch_obs, obs_mean, obs_std)
-        return jp.mean(jp.square(prediction - batch_target))
+        teacher_loss = jp.mean(jp.square(prediction - batch_target))
+        if anchor_params is None or anchor_weight <= 0.0:
+            return teacher_loss
+        anchor_prediction = jax.lax.stop_gradient(
+            _normalized_student_apply(jp, anchor_params, batch_obs, obs_mean, obs_std)
+        )
+        anchor_loss = jp.mean(jp.square(prediction - anchor_prediction))
+        return teacher_loss + anchor_weight * anchor_loss
 
     @jax.jit
     def update(current_params, current_optimizer_state, batch_obs, batch_target):
