@@ -385,4 +385,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T4 implementation are `99 passed`.
+local tests after the T4 fallback-selection fix are `100 passed`.

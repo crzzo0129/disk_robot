@@ -111,8 +111,8 @@ def _student_score(nominal, disturbed):
     return (
         nominal.get("reward_per_step", 0.0)
         + disturbed.get("reward_per_step", 0.0)
-        + 2.0 * nominal.get("mean_velocity_x", 0.0)
-        + 2.0 * disturbed.get("mean_velocity_x", 0.0)
+        - 10.0 * nominal.get("mean_velocity_error", 0.0)
+        - 10.0 * disturbed.get("mean_velocity_error", 0.0)
         - 3.0 * nominal.get("failure_rate", 0.0)
         - 3.0 * disturbed.get("failure_rate", 0.0)
         - 0.5 * nominal.get("mean_roll_pitch_rate_rms", 0.0)

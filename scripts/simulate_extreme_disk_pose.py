@@ -1,12 +1,19 @@
 """Physically simulate a robot through staged pose transitions."""
 import argparse
+from contextlib import nullcontext
 import math
+import sys
 import threading
 import time
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from disk_robot.video_recorder import MujocoVideoRecorder
+
+
 XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme_train.xml"
 PUPPER_XML_PATH = REPO_ROOT / "assets" / "pupper_v3_disk_visual.xml"
 DEFAULT_FROM_KEYFRAME = "walk_stand"
@@ -186,6 +193,10 @@ def parse_args(argv=None):
     )
     parser.add_argument("--headless", action="store_true", help="Run without the interactive viewer.")
     parser.add_argument("--steps", type=int, default=1000, help="Simulation steps for --headless.")
+    parser.add_argument("--video", type=Path, help="Write an MP4 while running the headless simulation.")
+    parser.add_argument("--video-fps", type=int, default=30)
+    parser.add_argument("--video-width", type=int, default=960)
+    parser.add_argument("--video-height", type=int, default=540)
     parser.add_argument("--status-interval", type=float, default=3, help="Seconds between status prints.")
     args = parser.parse_args(argv)
 
@@ -255,6 +266,8 @@ def parse_args(argv=None):
         parser.error("--repeat-retract-delay must be non-negative")
     if args.repeat_stance_sweep < 0.0:
         parser.error("--repeat-stance-sweep must be non-negative")
+    if args.video_fps <= 0 or args.video_width <= 0 or args.video_height <= 0:
+        parser.error("video fps and dimensions must be positive")
     return args
 
 
@@ -1022,15 +1035,37 @@ def main(argv=None):
             flush=True,
         )
 
-    if args.headless:
+    if args.headless or args.video is not None:
         last_status_time = -float("inf")
         stage = "walk_to_stand"
         alpha = 0.0
-        for _ in range(max(args.steps, 0)):
-            stage, alpha = step_physics()
-            if data.time - last_status_time >= args.status_interval:
-                print(_status_line(model, data, torso_id, disk_geom_id, rear_foot_body_ids, stage, alpha), flush=True)
-                last_status_time = data.time
+        video_context = (
+            MujocoVideoRecorder(
+                model,
+                args.video,
+                torso_id,
+                fps=args.video_fps,
+                width=args.video_width,
+                height=args.video_height,
+                azimuth=90,
+                elevation=-8,
+                distance=1.4,
+            )
+            if args.video is not None
+            else nullcontext(None)
+        )
+        with video_context as recorder:
+            if recorder is not None:
+                recorder.capture(data)
+            for _ in range(max(args.steps, 0)):
+                stage, alpha = step_physics()
+                if recorder is not None:
+                    recorder.capture(data)
+                if data.time - last_status_time >= args.status_interval:
+                    print(_status_line(model, data, torso_id, disk_geom_id, rear_foot_body_ids, stage, alpha), flush=True)
+                    last_status_time = data.time
+            if recorder is not None:
+                print(f"video={recorder.output_path} frames={recorder.frame_count}", flush=True)
         print(_status_line(model, data, torso_id, disk_geom_id, rear_foot_body_ids, stage, alpha), flush=True)
         return
 

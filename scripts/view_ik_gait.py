@@ -23,6 +23,7 @@ from disk_robot.ik_reference import IKReferenceSpec, build_ik_reference_from_mod
 from disk_robot.gait_speed import MAX_CALIBRATED_FORWARD_SPEED, plan_forward_gait
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.structure_variants import StructureVariant, apply_structure_variant
+from disk_robot.video_recorder import MujocoVideoRecorder
 
 
 DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
@@ -68,6 +69,10 @@ def parse_args(argv=None):
     parser.add_argument("--disk-radius", type=float, default=None)
     parser.add_argument("--kinematic", action="store_true", help="Show joint motion with the floating base fixed.")
     parser.add_argument("--headless", action="store_true", help="Run physics and print metrics without a viewer.")
+    parser.add_argument("--video", type=Path, help="Write an MP4 instead of opening the interactive viewer.")
+    parser.add_argument("--video-fps", type=int, default=30)
+    parser.add_argument("--video-width", type=int, default=960)
+    parser.add_argument("--video-height", type=int, default=540)
     return parser.parse_args(argv)
 
 
@@ -112,6 +117,8 @@ def main(argv=None):
         raise SystemExit("--kp and --kd must be nonnegative; --torque-limit must be positive")
     if not 0.5 <= args.duty < 1.0:
         raise SystemExit("--duty must be in [0.5, 1.0)")
+    if args.video_fps <= 0 or args.video_width <= 0 or args.video_height <= 0:
+        raise SystemExit("video fps and dimensions must be positive")
 
     import mujoco
 
@@ -185,20 +192,37 @@ def main(argv=None):
     print("Space=pause; R=reset; close window=exit")
     print("Metrics are one-second averages in the torso frame.")
 
-    if args.headless:
+    if args.headless or args.video is not None:
         viewer_context = nullcontext(None)
     else:
         from mujoco import viewer
 
         viewer_context = viewer.launch_passive(model, data, key_callback=key_callback)
 
-    with viewer_context as window:
+    video_context = (
+        MujocoVideoRecorder(
+            model,
+            args.video,
+            contract.torso_body_id,
+            fps=args.video_fps,
+            width=args.video_width,
+            height=args.video_height,
+            azimuth=90,
+            elevation=-10,
+            distance=1.2,
+        )
+        if args.video is not None
+        else nullcontext(None)
+    )
+    with viewer_context as window, video_context as recorder:
         if window is not None:
             window.cam.azimuth = 135
             window.cam.elevation = -18
             window.cam.distance = 1.1
         step_count = 0
         interval = []
+        if recorder is not None:
+            recorder.capture(data)
         while window is None or window.is_running():
             if state["reset"]:
                 _reset(model, data, contract, mujoco)
@@ -286,6 +310,8 @@ def main(argv=None):
             if window is not None:
                 window.cam.lookat[:] = data.xpos[contract.torso_body_id]
                 window.sync()
+            if recorder is not None:
+                recorder.capture(data)
             if window is None:
                 continue
             if state["paused"]:
@@ -293,6 +319,8 @@ def main(argv=None):
             else:
                 elapsed = time.perf_counter() - wall_start
                 time.sleep(max(0.0, control_dt / args.realtime - elapsed))
+        if recorder is not None:
+            print(f"video={recorder.output_path} frames={recorder.frame_count}")
 
 
 if __name__ == "__main__":

@@ -72,6 +72,7 @@ def test_t4_score_prefers_stable_forward_student():
     weak = {
         "reward_per_step": 0.0,
         "mean_velocity_x": 0.03,
+        "mean_velocity_error": 0.05,
         "failure_rate": 0.02,
         "mean_roll_pitch_rate_rms": 1.0,
         "mean_post_push_velocity_error": 0.10,
@@ -82,6 +83,7 @@ def test_t4_score_prefers_stable_forward_student():
         **weak,
         "reward_per_step": 1.0,
         "mean_velocity_x": 0.08,
+        "mean_velocity_error": 0.0,
         "failure_rate": 0.0,
         "mean_roll_pitch_rate_rms": 0.25,
         "mean_post_push_velocity_error": 0.04,
@@ -89,6 +91,29 @@ def test_t4_score_prefers_stable_forward_student():
     }
 
     assert _student_score(strong, strong) > _student_score(weak, weak)
+
+
+def test_t4_fallback_selection_does_not_prefer_stable_standing_over_walking():
+    from scripts.dagger_forward_student import _student_score
+
+    walking = {
+        "reward_per_step": 0.0,
+        "mean_velocity_error": 0.045,
+        "failure_rate": 0.0,
+        "mean_roll_pitch_rate_rms": 1.05,
+        "mean_post_push_velocity_error": 0.09,
+        "mean_recovery_time": 1.25,
+        "mean_disk_contacts": 0.0,
+    }
+    standing = {
+        **walking,
+        "reward_per_step": 0.13,
+        "mean_velocity_error": 0.066,
+        "mean_roll_pitch_rate_rms": 0.97,
+        "mean_recovery_time": 1.16,
+    }
+
+    assert _student_score(walking, walking) > _student_score(standing, standing)
 
 
 def test_t4_uses_student_rollouts_and_frozen_teacher_labels():
