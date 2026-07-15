@@ -286,7 +286,7 @@ params=mjx_runs/teacher_t2a_seed0/teacher/params
 This is the first accepted privileged disturbance Teacher and is the frozen source for T3.
 Do not retrain or overwrite it while distilling the Student.
 
-## 10. Current Task: T3 Frozen-Teacher Behavior Cloning
+## 10. T3 Result: Offline Fit Passed, Closed-Loop Retention Failed
 
 T3 is implemented as a separate entry point, `scripts/distill_forward_student.py`. It:
 
@@ -325,9 +325,52 @@ Read the compact terminal output in this order:
 4. `stage=student_bc_retention` gives Student-minus-Teacher deltas.
 5. `stage=t3_acceptance` is the T3 decision.
 
-Only after `accepted=True` should T4 DAgger begin.
+The formal T3 run `mjx_runs/student_t3_bc_seed0` produced an excellent offline fit but failed
+closed-loop retention:
 
-## 11. Commands And Workflow Notes
+```text
+final BC loss                         0.000006
+nominal mean_velocity_x               0.0290
+nominal failure_rate                  0.008
+nominal roll/pitch rate RMS           1.0668
+disturbed mean_velocity_x             0.0263
+disturbed failure_rate                0.016
+disturbed post-push velocity error    0.1028
+disturbed recovery time               1.449 s
+accepted                              False
+```
+
+The Student nearly exactly predicts Teacher actions on the demonstration dataset, but its own
+rollout leaves that dataset and degrades. More BC updates on the same fixed data are not the
+right next step. This is the intended trigger for T4 DAgger, not evidence that the accepted
+Teacher should be retrained.
+
+## 11. Current Task: T4 DAgger Closed-Loop Correction
+
+T4 is implemented as `scripts/dagger_forward_student.py`. It:
+
+- loads the frozen accepted Teacher and the existing T3 Student instead of reinitializing;
+- requires the T3 dataset saved by `--save-dataset`;
+- rolls out the current Student in both nominal and disturbed environments;
+- asks the Teacher to label the states actually visited by the Student;
+- aggregates new labels with the original BC dataset;
+- evaluates every DAgger round and saves each round separately;
+- selects an accepted round first, otherwise the highest-scoring round;
+- never updates or overwrites Teacher or T3 artifacts.
+
+Run the cloud smoke first:
+
+```bash
+python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --smoke --out mjx_runs/student_t4_dagger_smoke_seed0
+```
+
+If smoke reaches `stage=t4_acceptance`, run formal T4:
+
+```bash
+python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --out mjx_runs/student_t4_dagger_seed0 --save-dataset --strict-acceptance
+```
+
+## 12. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -342,4 +385,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T3 implementation are `94 passed`.
+local tests after the T4 implementation are `99 passed`.

@@ -211,7 +211,7 @@ def _bc_acceptance(nominal, disturbed, teacher_evaluation, args):
     }
 
 
-def _print_retention(mode, student, teacher):
+def _print_retention(mode, student, teacher, stage="student_bc_retention"):
     values = [
         f"delta_vx={student['mean_velocity_x'] - teacher['mean_velocity_x']:+.4f}",
         f"delta_failure={student['failure_rate'] - teacher['failure_rate']:+.3f}",
@@ -225,7 +225,7 @@ def _print_retention(mode, student, teacher):
                 f"delta_distance={student['mean_forward_distance'] - teacher['mean_forward_distance']:+.4f}",
             )
         )
-    print(f"stage=student_bc_retention mode={mode} {' '.join(values)}", flush=True)
+    print(f"stage={stage} mode={mode} {' '.join(values)}", flush=True)
 
 
 def main(argv=None):
