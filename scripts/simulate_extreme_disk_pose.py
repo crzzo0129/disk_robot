@@ -58,6 +58,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--rear-fold-time", type=float, help="Seconds to fold the rear legs after the front legs.")
     parser.add_argument("--folded-hold-time", type=float, help="Seconds to hold the preparatory folded pose.")
+    parser.add_argument(
+        "--fold-order",
+        choices=("front-first", "rear-first", "simultaneous"),
+        default="simultaneous",
+        help="Coordination used for the standing-to-folded transition.",
+    )
     parser.add_argument("--walk-to-stand-time", type=float, help="Seconds to move from the first pose to the middle pose.")
     parser.add_argument("--stand-hold-time", type=float, help="Seconds to hold the middle pose.")
     parser.add_argument("--stand-to-folded-time", type=float, help="Seconds to move from the middle pose to the final pose.")
@@ -104,7 +110,7 @@ def parse_args(argv=None):
         args.stand_hold_time = 0.04 if args.stand_hold_time is None else args.stand_hold_time
         args.stand_to_folded_time = 0.14 if args.stand_to_folded_time is None else args.stand_to_folded_time
         args.push_scale = 1.0 if args.push_scale is None else args.push_scale
-        args.push_trigger_speed = 0.3 if args.push_trigger_speed is None else args.push_trigger_speed
+        args.push_trigger_speed = 0.1 if args.push_trigger_speed is None else args.push_trigger_speed
         args.push_trigger_timeout = 2.0 if args.push_trigger_timeout is None else args.push_trigger_timeout
         args.kp = 60.0 if args.kp is None else args.kp
         args.kd = 1.0 if args.kd is None else args.kd
@@ -176,6 +182,33 @@ def tangential_rear_push_target(folded_ctrl, push_scale=1.0, ranges=None):
     full_push[6:9] = [-1.4, 0.0, 0.05]
     full_push[9:12] = [1.4, 0.0, -0.05]
     return partial_push_target(folded_ctrl, full_push, push_scale, ranges)
+
+
+def folding_target(
+    from_ctrl,
+    folded_ctrl,
+    stage,
+    alpha,
+    fold_order,
+    front_fold_time,
+    rear_fold_time,
+    ranges=None,
+):
+    """Coordinate the first six (front) and last six (rear) leg targets."""
+    front_folded = folded_ctrl[:6] + from_ctrl[6:]
+    rear_folded = from_ctrl[:6] + folded_ctrl[6:]
+    eased = smootherstep(alpha)
+    if fold_order == "front-first":
+        start, end = (from_ctrl, front_folded) if stage == "front_fold" else (front_folded, folded_ctrl)
+        return lerp_sequence(start, end, eased, ranges)
+    if fold_order == "rear-first":
+        start, end = (from_ctrl, rear_folded) if stage == "front_fold" else (rear_folded, folded_ctrl)
+        return lerp_sequence(start, end, eased, ranges)
+
+    elapsed = alpha * front_fold_time if stage == "front_fold" else front_fold_time + alpha * rear_fold_time
+    total_time = max(front_fold_time, 0.0) + max(rear_fold_time, 0.0)
+    global_alpha = 1.0 if total_time <= 0.0 else elapsed / total_time
+    return lerp_sequence(from_ctrl, folded_ctrl, smootherstep(global_alpha), ranges)
 
 
 def staged_target(sim_time, switch_time, walk_to_stand_time, stand_hold_time, stand_to_folded_time):
@@ -344,7 +377,6 @@ def main(argv=None):
     from_ctrl = _keyframe_ctrl(model, from_id)
     middle_ctrl = _keyframe_ctrl(model, middle_id)
     to_ctrl = _keyframe_ctrl(model, to_id)
-    front_fold_ctrl = to_ctrl[:6] + from_ctrl[6:]
     ctrl_ranges = _control_ranges(model)
     if args.push_style == "tangent":
         push_ctrl = tangential_rear_push_target(to_ctrl, args.push_scale or 0.0, ctrl_ranges)
@@ -365,9 +397,27 @@ def main(argv=None):
         stage, alpha = current_target()
         if not state.switched:
             if stage == "front_fold":
-                data.ctrl[:] = lerp_sequence(from_ctrl, front_fold_ctrl, alpha, ctrl_ranges)
+                data.ctrl[:] = folding_target(
+                    from_ctrl,
+                    to_ctrl,
+                    stage,
+                    alpha,
+                    args.fold_order,
+                    args.front_fold_time,
+                    args.rear_fold_time,
+                    ctrl_ranges,
+                )
             elif stage == "rear_fold":
-                data.ctrl[:] = lerp_sequence(front_fold_ctrl, to_ctrl, alpha, ctrl_ranges)
+                data.ctrl[:] = folding_target(
+                    from_ctrl,
+                    to_ctrl,
+                    stage,
+                    alpha,
+                    args.fold_order,
+                    args.front_fold_time,
+                    args.rear_fold_time,
+                    ctrl_ranges,
+                )
             elif stage == "folded_hold":
                 data.ctrl[:] = to_ctrl
             elif stage == "folded_to_push":
@@ -482,6 +532,7 @@ def main(argv=None):
             f"switch_time={args.switch_time:.3f}s "
             f"front_fold_time={args.front_fold_time:.3f}s "
             f"rear_fold_time={args.rear_fold_time:.3f}s "
+            f"fold_order={args.fold_order} "
             f"folded_hold_time={args.folded_hold_time:.3f}s "
             f"folded_to_push_time={args.walk_to_stand_time:.3f}s "
             f"push_hold_time={args.stand_hold_time:.3f}s "

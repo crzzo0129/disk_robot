@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import sys
+from collections.abc import Mapping
+from dataclasses import is_dataclass, replace
 from pathlib import Path
 
 
@@ -79,14 +81,89 @@ def activation_fn(name):
     }[name]
 
 
-def make_network_factory(hidden_layers, activation):
+def _replace_field(value, **changes):
+    if is_dataclass(value):
+        return replace(value, **changes)
+    if hasattr(value, "_replace"):
+        return value._replace(**changes)
+    return type(value)(**{**vars(value), **changes})
+
+
+def _replace_mapping_value(mapping, key, value):
+    copied = dict(mapping)
+    copied[key] = value
+    try:
+        return type(mapping)(copied)
+    except TypeError:
+        return mapping.copy(add_or_replace={key: value})
+
+
+def _zero_policy_output_layer(params, zeros_like):
+    """Zeros the final layer of a Brax MLP parameter tree across 0.10+ layouts."""
+
+    if isinstance(params, Mapping):
+        if "params" in params:
+            return _replace_mapping_value(
+                params,
+                "params",
+                _zero_policy_output_layer(params["params"], zeros_like),
+            )
+        layer_keys = [
+            key
+            for key, value in params.items()
+            if isinstance(value, Mapping) and ("kernel" in value or "bias" in value)
+        ]
+        if layer_keys:
+            key = layer_keys[-1]
+            return _replace_mapping_value(
+                params, key, _tree_zeros(params[key], zeros_like)
+            )
+    if isinstance(params, (list, tuple)) and params:
+        values = list(params)
+        values[-1] = _tree_zeros(values[-1], zeros_like)
+        return type(params)(values) if isinstance(params, tuple) else values
+    raise RuntimeError(
+        "Unsupported Brax policy parameter layout; cannot zero the actor output layer"
+    )
+
+
+def _tree_zeros(value, zeros_like):
+    if isinstance(value, Mapping):
+        return type(value)(
+            {key: _tree_zeros(item, zeros_like) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return [_tree_zeros(item, zeros_like) for item in value]
+    if isinstance(value, tuple):
+        return type(value)(_tree_zeros(item, zeros_like) for item in value)
+    return zeros_like(value)
+
+
+def make_network_factory(hidden_layers, activation, zero_policy_output=False):
     try:
         from brax.training.agents.ppo import networks as ppo_networks
     except ImportError as exc:
         raise RuntimeError("Network factory requires Brax.") from exc
-    return lambda *args, **kwargs: ppo_networks.make_ppo_networks(
-        *args,
-        policy_hidden_layer_sizes=hidden_layers_tuple(hidden_layers),
-        activation=activation_fn(activation),
-        **kwargs,
-    )
+
+    def factory(*args, **kwargs):
+        networks = ppo_networks.make_ppo_networks(
+            *args,
+            policy_hidden_layer_sizes=hidden_layers_tuple(hidden_layers),
+            activation=activation_fn(activation),
+            **kwargs,
+        )
+        if not zero_policy_output:
+            return networks
+
+        import jax
+
+        policy_network = networks.policy_network
+        original_init = policy_network.init
+
+        def zero_output_init(key):
+            return _zero_policy_output_layer(original_init(key), jax.numpy.zeros_like)
+
+        policy_network = _replace_field(policy_network, init=zero_output_init)
+        return _replace_field(networks, policy_network=policy_network)
+
+    return factory

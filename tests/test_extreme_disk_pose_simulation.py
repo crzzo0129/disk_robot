@@ -96,6 +96,16 @@ def test_tangential_push_is_symmetric_and_keeps_front_legs_folded():
     assert target[9:12] == [1.4, 0.0, -0.05]
 
 
+def test_simultaneous_folding_moves_front_and_rear_together():
+    from scripts.simulate_extreme_disk_pose import folding_target
+
+    start = [0.0] * 12
+    folded = [1.0] * 12
+    target = folding_target(start, folded, "rear_fold", 0.0, "simultaneous", 0.2, 0.6)
+
+    assert target == [0.103515625] * 12
+
+
 def test_rear_push_roll_target_folds_before_pushing():
     from scripts.simulate_extreme_disk_pose import rear_push_roll_target
 
@@ -146,13 +156,14 @@ def test_rear_push_roll_preset_selects_motion_and_runtime_strength():
     assert args.switch_time == 0.5
     assert args.front_fold_time == 0.18
     assert args.rear_fold_time == 0.55
+    assert args.fold_order == "simultaneous"
     assert args.folded_hold_time == 0.3
     assert args.walk_to_stand_time == 0.28
     assert args.stand_hold_time == 0.04
     assert args.stand_to_folded_time == 0.14
     assert args.push_style == "tangent"
     assert args.push_scale == 1.0
-    assert args.push_trigger_speed == 0.3
+    assert args.push_trigger_speed == 0.1
     assert args.push_trigger_timeout == 2.0
     assert args.kp == 60.0
     assert args.kd == 1.0

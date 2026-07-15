@@ -180,7 +180,9 @@ def make_forward_teacher_student_env(
                 gait_blend = state.info["gait_blend"]
                 ik_target = self._blended_ik_target(phase, gait_blend)
                 if self.role == "teacher":
-                    residual_action = action
+                    residual_action = self._filter_teacher_residual(
+                        state.info["previous_residual"], action
+                    )
                     target_ctrl = ik_target + self.residual_scale * residual_action
                     student_action = self._target_to_student_action(target_ctrl)
                 else:
@@ -309,9 +311,11 @@ def make_forward_teacher_student_env(
                 **{f"reward_{name}": value for name, value in reward_terms.items()},
                 "velocity_x": forward_velocity,
                 "velocity_y": world_velocity[1],
+                "abs_velocity_y": jp.abs(world_velocity[1]),
                 "body_velocity_x": body_velocity[0],
                 "body_velocity_y": body_velocity[1],
                 "yaw_rate": body_angular_velocity[2],
+                "abs_yaw_rate": jp.abs(body_angular_velocity[2]),
                 "velocity_error": jp.abs(velocity_error),
                 "roll_pitch_rate_rms": jp.sqrt(jp.mean(jp.square(body_angular_velocity[:2]))),
                 "upright": upright,
@@ -328,6 +332,9 @@ def make_forward_teacher_student_env(
             return State(data, obs, reward, done, metrics, info)
 
         def teacher_action_to_student_action(self, state, residual_action):
+            residual_action = self._filter_teacher_residual(
+                state.info["previous_residual"], residual_action
+            )
             target = jp.clip(
                 self._blended_ik_target(
                     state.info["phase"], state.info["gait_blend"]
@@ -337,6 +344,12 @@ def make_forward_teacher_student_env(
                 self.ctrl_high,
             )
             return self._target_to_student_action(target)
+
+        def _filter_teacher_residual(self, previous_residual, residual_command):
+            command = jp.clip(residual_command, -1.0, 1.0)
+            return previous_residual + self.config.residual_filter_alpha * (
+                command - previous_residual
+            )
 
         def _ik_target(self, phase):
             return interpolate_reference_jax(jp, self.ik_table, phase)
@@ -424,9 +437,11 @@ def make_forward_teacher_student_env(
                 "reward",
                 "velocity_x",
                 "velocity_y",
+                "abs_velocity_y",
                 "body_velocity_x",
                 "body_velocity_y",
                 "yaw_rate",
+                "abs_yaw_rate",
                 "velocity_error",
                 "roll_pitch_rate_rms",
                 "upright",

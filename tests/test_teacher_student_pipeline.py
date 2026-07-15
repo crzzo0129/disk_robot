@@ -26,6 +26,11 @@ def test_pipeline_smoke_and_stand_defaults_are_explicit():
     assert args.teacher_batch_size == 256
     assert args.teacher_minibatches == 32
     assert args.residual_scale_multiplier == 1.0
+    assert args.residual_filter_alpha == 0.15
+    assert args.penalty_residual == 0.20
+    assert args.penalty_residual_rate == 0.05
+    assert args.teacher_zero_policy_init
+    assert args.teacher_selection_mode == "improve"
     assert not args.allow_ik_baseline_teacher
     assert not args.teacher_only
 
@@ -55,6 +60,72 @@ def test_pipeline_defaults_match_the_stable_ik_baseline():
     assert args.teacher_learning_rate == 1e-4
     assert args.teacher_entropy_cost == 1e-3
     assert ForwardTeacherStudentConfig().velocity_sigma == 0.01
+    assert ForwardTeacherStudentConfig().residual_filter_alpha == 0.15
+    assert ForwardTeacherStudentConfig().penalty_residual == 0.20
+
+
+def test_zero_policy_initializer_supports_brax_parameter_layouts():
+    import numpy as np
+
+    from disk_robot_mjx.pipeline import _zero_policy_output_layer
+
+    old_layout = [
+        (np.ones((3, 4)), np.ones(4)),
+        (np.ones((4, 2)), np.ones(2)),
+    ]
+    zeroed_old = _zero_policy_output_layer(old_layout, np.zeros_like)
+    assert np.all(zeroed_old[0][0] == 1.0)
+    assert np.all(zeroed_old[-1][0] == 0.0)
+    assert np.all(zeroed_old[-1][1] == 0.0)
+
+    flax_layout = {
+        "params": {
+            "hidden_0": {"kernel": np.ones((3, 4)), "bias": np.ones(4)},
+            "hidden_1": {"kernel": np.ones((4, 2)), "bias": np.ones(2)},
+        }
+    }
+    zeroed_flax = _zero_policy_output_layer(flax_layout, np.zeros_like)
+    assert np.all(zeroed_flax["params"]["hidden_0"]["kernel"] == 1.0)
+    assert np.all(zeroed_flax["params"]["hidden_1"]["kernel"] == 0.0)
+    assert np.all(zeroed_flax["params"]["hidden_1"]["bias"] == 0.0)
+
+
+def test_t1b_preserve_selection_requires_all_baseline_tolerances():
+    from scripts.train_forward_teacher_student import (
+        _ppo_preserves_baseline,
+        _should_select_ppo,
+    )
+
+    baseline = {
+        "mean_velocity_x": 0.084,
+        "failure_rate": 0.0,
+        "mean_roll_pitch_rate_rms": 0.22,
+        "mean_abs_velocity_y": 0.01,
+        "mean_abs_yaw_rate": 0.10,
+    }
+    ppo = {
+        "mean_velocity_x": 0.075,
+        "failure_rate": 0.01,
+        "mean_roll_pitch_rate_rms": 0.31,
+        "mean_abs_velocity_y": 0.019,
+        "mean_abs_yaw_rate": 0.149,
+    }
+    assert _ppo_preserves_baseline(ppo, baseline)
+    assert _should_select_ppo("preserve", 0.99, 1.0, True)
+    assert not _should_select_ppo("improve", 0.99, 1.0, True)
+
+    ppo["mean_abs_yaw_rate"] = 0.151
+    assert not _ppo_preserves_baseline(ppo, baseline)
+    assert not _should_select_ppo("preserve", 1.01, 1.0, False)
+
+
+def test_t1b_preserve_mode_cannot_start_student_distillation():
+    import pytest
+
+    from scripts.train_forward_teacher_student import main
+
+    with pytest.raises(SystemExit, match="preserve requires --teacher-only"):
+        main(["--teacher-selection-mode", "preserve"])
 
 
 def test_pipeline_manual_ik_mode_keeps_explicit_parameters():

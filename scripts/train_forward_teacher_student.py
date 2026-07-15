@@ -36,16 +36,33 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-minibatches", type=int, default=32)
     parser.add_argument("--teacher-updates-per-batch", type=int, default=4)
     parser.add_argument(
+        "--teacher-zero-policy-init",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Initialize the PPO actor output layer to zero residual commands.",
+    )
+    parser.add_argument("--residual-filter-alpha", type=float, default=0.15)
+    parser.add_argument("--penalty-residual", type=float, default=0.20)
+    parser.add_argument("--penalty-residual-rate", type=float, default=0.05)
+    parser.add_argument(
         "--residual-scale-multiplier",
         type=float,
         default=1.0,
         help="Multiply the per-joint teacher residual limits without changing IK or student actions.",
     )
     parser.add_argument("--teacher-restore", type=Path, default=None)
+    parser.add_argument(
+        "--teacher-selection-mode",
+        choices=("improve", "preserve"),
+        default="improve",
+        help="Select PPO only when it improves score, or for teacher-only T1b when it preserves IK.",
+    )
     parser.add_argument("--min-accepted-teacher-vx", type=float, default=None)
     parser.add_argument("--max-accepted-teacher-failure-rate", type=float, default=0.10)
     parser.add_argument("--max-accepted-teacher-velocity-error", type=float, default=0.03)
     parser.add_argument("--max-accepted-teacher-roll-pitch-rate", type=float, default=0.50)
+    parser.add_argument("--max-accepted-teacher-lateral-speed", type=float, default=0.03)
+    parser.add_argument("--max-accepted-teacher-yaw-rate", type=float, default=0.25)
     parser.add_argument(
         "--allow-ik-baseline-teacher",
         action="store_true",
@@ -69,6 +86,8 @@ def parse_args(argv=None):
     parser.add_argument("--max-accepted-failure-rate", type=float, default=0.10)
     parser.add_argument("--max-accepted-velocity-error", type=float, default=0.03)
     parser.add_argument("--max-accepted-roll-pitch-rate", type=float, default=0.60)
+    parser.add_argument("--max-accepted-lateral-speed", type=float, default=0.03)
+    parser.add_argument("--max-accepted-yaw-rate", type=float, default=0.25)
     parser.add_argument("--strict-acceptance", action="store_true")
     parser.add_argument(
         "--teacher-only",
@@ -172,6 +191,8 @@ def _teacher_eval_summary(metrics, command_vx):
         ("reward_per_step", "eval/episode_reward"),
         ("mean_velocity_x", "eval/episode_velocity_x"),
         ("mean_instantaneous_velocity_error", "eval/episode_velocity_error"),
+        ("mean_abs_velocity_y", "eval/episode_abs_velocity_y"),
+        ("mean_abs_yaw_rate", "eval/episode_abs_yaw_rate"),
         ("mean_roll_pitch_rate_rms", "eval/episode_roll_pitch_rate_rms"),
     ):
         value = _metric_scalar(metrics.get(metric_name))
@@ -197,6 +218,27 @@ def _teacher_selection_score(report):
         - 2.0 * report.get("failure_rate", 0.0)
         - 0.5 * report.get("mean_velocity_error", 0.0)
         - 0.1 * report.get("mean_roll_pitch_rate_rms", 0.0)
+        - 0.2 * report.get("mean_abs_velocity_y", 0.0)
+        - 0.1 * report.get("mean_abs_yaw_rate", 0.0)
+    )
+
+
+def _ppo_preserves_baseline(ppo_report, baseline_report):
+    return (
+        ppo_report["mean_velocity_x"] >= baseline_report["mean_velocity_x"] - 0.01
+        and ppo_report["failure_rate"] <= baseline_report["failure_rate"] + 0.02
+        and ppo_report["mean_roll_pitch_rate_rms"]
+        <= baseline_report["mean_roll_pitch_rate_rms"] + 0.10
+        and ppo_report["mean_abs_velocity_y"]
+        <= baseline_report["mean_abs_velocity_y"] + 0.01
+        and ppo_report["mean_abs_yaw_rate"]
+        <= baseline_report["mean_abs_yaw_rate"] + 0.05
+    )
+
+
+def _should_select_ppo(selection_mode, ppo_score, baseline_score, preserves_baseline):
+    return preserves_baseline and (
+        selection_mode == "preserve" or ppo_score > baseline_score
     )
 
 
@@ -309,6 +351,9 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         return (next_state, policy_key), (
             next_state.reward,
             next_state.metrics["velocity_x"],
+            next_state.metrics["velocity_y"],
+            next_state.metrics["abs_velocity_y"],
+            next_state.metrics["abs_yaw_rate"],
             next_state.metrics["velocity_error"],
             next_state.metrics["roll_pitch_rate_rms"],
             next_state.metrics["failed"],
@@ -321,7 +366,7 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         (),
         length=horizon,
     )
-    reward, vx, velocity_error, roll_pitch_rate, failed, alive = [
+    reward, vx, vy, abs_vy, abs_yaw_rate, velocity_error, roll_pitch_rate, failed, alive = [
         np.asarray(jax.device_get(value)) for value in values
     ]
     denominator = max(float(np.sum(alive)), 1.0)
@@ -330,6 +375,9 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         "reward_per_step": float(np.sum(reward * alive) / denominator),
         "mean_velocity_x": mean_velocity_x,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
+        "mean_lateral_distance": float(np.mean(np.sum(vy * alive, axis=0)) * env.dt),
+        "mean_abs_velocity_y": float(np.sum(abs_vy * alive) / denominator),
+        "mean_abs_yaw_rate": float(np.sum(abs_yaw_rate * alive) / denominator),
         "mean_velocity_error": abs(mean_velocity_x - env.config.command_vx),
         "mean_instantaneous_velocity_error": float(
             np.sum(velocity_error * alive) / denominator
@@ -457,6 +505,9 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
         alive = 1.0 - current_state.done
         return next_state, (
             next_state.metrics["velocity_x"],
+            next_state.metrics["velocity_y"],
+            next_state.metrics["abs_velocity_y"],
+            next_state.metrics["abs_yaw_rate"],
             next_state.metrics["velocity_error"],
             next_state.metrics["roll_pitch_rate_rms"],
             next_state.metrics["disk_contact_count"],
@@ -465,7 +516,7 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
         )
 
     _, values = jax.lax.scan(eval_step, state, (), length=horizon)
-    vx, velocity_error, roll_pitch_rate, disk_contact, failed, alive = [
+    vx, vy, abs_vy, abs_yaw_rate, velocity_error, roll_pitch_rate, disk_contact, failed, alive = [
         np.asarray(jax.device_get(value)) for value in values
     ]
     denominator = max(float(np.sum(alive)), 1.0)
@@ -474,6 +525,9 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
     return {
         "mean_velocity_x": mean_velocity_x,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
+        "mean_lateral_distance": float(np.mean(np.sum(vy * alive, axis=0)) * env.dt),
+        "mean_abs_velocity_y": float(np.sum(abs_vy * alive) / denominator),
+        "mean_abs_yaw_rate": float(np.sum(abs_yaw_rate * alive) / denominator),
         "mean_velocity_error": abs(mean_velocity_x - env.config.command_vx),
         "mean_instantaneous_velocity_error": float(
             np.sum(velocity_error * alive) / denominator
@@ -490,6 +544,12 @@ def main(argv=None):
     _resolve_acceptance_thresholds(args)
     if not 0.0 < args.residual_scale_multiplier <= 1.0:
         raise SystemExit("--residual-scale-multiplier must be in (0, 1]")
+    if not 0.0 < args.residual_filter_alpha <= 1.0:
+        raise SystemExit("--residual-filter-alpha must be in (0, 1]")
+    if args.penalty_residual < 0.0 or args.penalty_residual_rate < 0.0:
+        raise SystemExit("residual penalties must be non-negative")
+    if args.teacher_selection_mode == "preserve" and not args.teacher_only:
+        raise SystemExit("--teacher-selection-mode preserve requires --teacher-only")
     if args.smoke:
         args.teacher_steps = min(args.teacher_steps, 20_000)
         args.teacher_envs = min(args.teacher_envs, 64)
@@ -538,6 +598,9 @@ def main(argv=None):
         actuator_kd=args.kd,
         torque_limit=args.torque_limit,
         startup_blend_steps=args.startup_steps,
+        residual_filter_alpha=args.residual_filter_alpha,
+        penalty_residual=args.penalty_residual,
+        penalty_residual_rate=args.penalty_residual_rate,
         residual_scale=tuple(
             value * args.residual_scale_multiplier
             for value in ForwardTeacherStudentConfig().residual_scale
@@ -680,7 +743,11 @@ def main(argv=None):
         num_minibatches=args.teacher_minibatches,
         num_updates_per_batch=args.teacher_updates_per_batch,
         normalize_observations=True,
-        network_factory=make_network_factory(args.teacher_hidden, "elu"),
+        network_factory=make_network_factory(
+            args.teacher_hidden,
+            "elu",
+            zero_policy_output=args.teacher_zero_policy_init,
+        ),
         progress_fn=progress_fn,
         seed=args.seed,
         **checkpoint_kwargs,
@@ -711,15 +778,16 @@ def main(argv=None):
     )
     ppo_score = _teacher_selection_score(ppo_report)
     baseline_score = _teacher_selection_score(baseline_selection_report)
-    ppo_preserves_baseline = (
-        ppo_report["mean_velocity_x"]
-        >= baseline_selection_report["mean_velocity_x"] - 0.01
-        and ppo_report["failure_rate"]
-        <= baseline_selection_report["failure_rate"] + 0.02
-        and ppo_report["mean_roll_pitch_rate_rms"]
-        <= baseline_selection_report["mean_roll_pitch_rate_rms"] + 0.10
+    ppo_preserves_baseline = _ppo_preserves_baseline(
+        ppo_report, baseline_selection_report
     )
-    if baseline_score >= ppo_score or not ppo_preserves_baseline:
+    select_ppo = _should_select_ppo(
+        args.teacher_selection_mode,
+        ppo_score,
+        baseline_score,
+        ppo_preserves_baseline,
+    )
+    if not select_ppo:
         selected_source = "ik_baseline"
         selected_step = 0
         teacher_policy = zero_teacher_policy
@@ -736,10 +804,11 @@ def main(argv=None):
     selection = {
         "selected_source": selected_source,
         "selected_step": selected_step,
-        "selected_score": max(ppo_score, baseline_score),
+        "selected_score": ppo_score if selected_source == "ppo" else baseline_score,
         "ppo_step": ppo_selected_step,
         "ppo_score": ppo_score,
         "ppo_preserves_baseline": ppo_preserves_baseline,
+        "selection_mode": args.teacher_selection_mode,
         "ppo_report": ppo_report,
         "ik_baseline_score": baseline_score,
         "ik_baseline_report": baseline_selection_report,
@@ -764,10 +833,17 @@ def main(argv=None):
         <= args.max_accepted_teacher_velocity_error
         and teacher_report["mean_roll_pitch_rate_rms"]
         <= args.max_accepted_teacher_roll_pitch_rate
+        and teacher_report["mean_abs_velocity_y"]
+        <= args.max_accepted_teacher_lateral_speed
+        and teacher_report["mean_abs_yaw_rate"]
+        <= args.max_accepted_teacher_yaw_rate
     )
     if selected_source != "ppo" and not args.allow_ik_baseline_teacher:
         teacher_accepted = False
-        teacher_report["rejection_reason"] = "ppo_teacher_did_not_outperform_ik_baseline"
+        if args.teacher_selection_mode == "preserve":
+            teacher_report["rejection_reason"] = "ppo_teacher_did_not_preserve_ik_baseline"
+        else:
+            teacher_report["rejection_reason"] = "ppo_teacher_did_not_outperform_ik_baseline"
     teacher_report["accepted"] = teacher_accepted
     teacher_report["minimum_velocity_x"] = args.min_accepted_teacher_vx
     teacher_report["maximum_failure_rate"] = args.max_accepted_teacher_failure_rate
@@ -775,6 +851,8 @@ def main(argv=None):
     teacher_report["maximum_roll_pitch_rate_rms"] = (
         args.max_accepted_teacher_roll_pitch_rate
     )
+    teacher_report["maximum_abs_velocity_y"] = args.max_accepted_teacher_lateral_speed
+    teacher_report["maximum_abs_yaw_rate"] = args.max_accepted_teacher_yaw_rate
     teacher_report["selected_source"] = selected_source
     teacher_report["selected_step"] = selected_step
     (teacher_dir / "evaluation.json").write_text(
@@ -885,12 +963,16 @@ def main(argv=None):
         and report["failure_rate"] <= args.max_accepted_failure_rate
         and report["mean_velocity_error"] <= args.max_accepted_velocity_error
         and report["mean_roll_pitch_rate_rms"] <= args.max_accepted_roll_pitch_rate
+        and report["mean_abs_velocity_y"] <= args.max_accepted_lateral_speed
+        and report["mean_abs_yaw_rate"] <= args.max_accepted_yaw_rate
     )
     report["accepted"] = accepted
     report["minimum_velocity_x"] = args.min_accepted_vx
     report["maximum_failure_rate"] = args.max_accepted_failure_rate
     report["maximum_velocity_error"] = args.max_accepted_velocity_error
     report["maximum_roll_pitch_rate_rms"] = args.max_accepted_roll_pitch_rate
+    report["maximum_abs_velocity_y"] = args.max_accepted_lateral_speed
+    report["maximum_abs_yaw_rate"] = args.max_accepted_yaw_rate
 
     metadata = {
         "format": "disk_robot_student_mlp_v1",

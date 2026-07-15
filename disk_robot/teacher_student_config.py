@@ -28,6 +28,7 @@ class ForwardTeacherStudentConfig:
     command_vx: float = 0.08
     student_action_scale: tuple[float, ...] = ACTION_SCALE
     residual_scale: tuple[float, ...] = RESIDUAL_SCALE
+    residual_filter_alpha: float = 0.15
 
     actuator_kp: float = 10.0
     actuator_kd: float = 0.4
@@ -45,7 +46,7 @@ class ForwardTeacherStudentConfig:
     penalty_joint_velocity: float = 0.0005
     penalty_foot_slip: float = 0.05
     penalty_disk_contact: float = 0.8
-    penalty_residual: float = 0.02
+    penalty_residual: float = 0.20
     penalty_residual_rate: float = 0.05
     penalty_contact_mismatch: float = 0.02
     penalty_termination: float = 5.0
