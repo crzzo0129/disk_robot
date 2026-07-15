@@ -28,13 +28,14 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-evals", type=int, default=6)
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--teacher-hidden", type=int, nargs="+", default=[256, 256, 128])
-    parser.add_argument("--teacher-learning-rate", type=float, default=3e-4)
+    parser.add_argument("--teacher-learning-rate", type=float, default=1e-4)
+    parser.add_argument("--teacher-entropy-cost", type=float, default=1e-3)
     parser.add_argument("--teacher-unroll-length", type=int, default=20)
     parser.add_argument("--teacher-batch-size", type=int, default=256)
     parser.add_argument("--teacher-minibatches", type=int, default=32)
     parser.add_argument("--teacher-updates-per-batch", type=int, default=4)
     parser.add_argument("--teacher-restore", type=Path, default=None)
-    parser.add_argument("--min-accepted-teacher-vx", type=float, default=0.04)
+    parser.add_argument("--min-accepted-teacher-vx", type=float, default=0.02)
     parser.add_argument("--max-accepted-teacher-failure-rate", type=float, default=0.10)
 
     parser.add_argument("--rollout-envs", type=int, default=256)
@@ -50,7 +51,7 @@ def parse_args(argv=None):
     parser.add_argument("--save-dataset", action="store_true")
 
     parser.add_argument("--eval-envs", type=int, default=256)
-    parser.add_argument("--min-accepted-vx", type=float, default=0.04)
+    parser.add_argument("--min-accepted-vx", type=float, default=0.02)
     parser.add_argument("--max-accepted-failure-rate", type=float, default=0.10)
     parser.add_argument("--strict-acceptance", action="store_true")
 
@@ -59,7 +60,7 @@ def parse_args(argv=None):
     parser.add_argument("--ik-stride", type=float, default=0.04)
     parser.add_argument("--ik-height", type=float, default=0.025)
     parser.add_argument("--ik-duty", type=float, default=0.72)
-    parser.add_argument("--command-vx", type=float, default=0.10)
+    parser.add_argument("--command-vx", type=float, default=0.03)
     parser.add_argument("--kp", type=float, default=7.5)
     parser.add_argument("--kd", type=float, default=0.25)
     parser.add_argument("--torque-limit", type=float, default=3.0)
@@ -96,22 +97,30 @@ def _metric_scalar(value):
         return None
 
 
+def _teacher_eval_summary(metrics):
+    episode_length = _metric_scalar(metrics.get("eval/avg_episode_length"))
+    if episode_length is None or episode_length <= 0.0:
+        return {}
+    summary = {"episode_length": episode_length}
+    for output_name, metric_name in (
+        ("reward_per_step", "eval/episode_reward"),
+        ("mean_velocity_x", "eval/episode_velocity_x"),
+        ("mean_velocity_error", "eval/episode_velocity_error"),
+        ("mean_roll_pitch_rate_rms", "eval/episode_roll_pitch_rate_rms"),
+    ):
+        value = _metric_scalar(metrics.get(metric_name))
+        if value is not None:
+            summary[output_name] = value / episode_length
+    failed = _metric_scalar(metrics.get("eval/episode_failed"))
+    if failed is not None:
+        summary["failure_rate"] = failed
+    return summary
+
+
 def _teacher_progress(step, metrics):
-    names = (
-        "eval/episode_reward",
-        "eval/avg_episode_length",
-        "eval/episode_velocity_x",
-        "eval/episode_velocity_error",
-        "eval/episode_roll_pitch_rate_rms",
-        "eval/episode_failed",
-    )
-    values = []
-    for name in names:
-        if name in metrics:
-            value = _metric_scalar(metrics[name])
-            if value is not None:
-                values.append(f"{name.split('/')[-1]}={value:.4f}")
-    print(f"stage=teacher_eval step={int(step):,} " + " ".join(values), flush=True)
+    summary = _teacher_eval_summary(metrics)
+    values = " ".join(f"{name}={value:.5f}" for name, value in summary.items())
+    print(f"stage=teacher_eval step={int(step):,} {values}", flush=True)
 
 
 def _student_init(jax, jp, key, layer_sizes):
@@ -461,6 +470,22 @@ def main(argv=None):
     teacher_eval_env = make_forward_teacher_student_env(
         "teacher", config=config, reference=reference, xml_path=args.xml_path, seed=args.seed + 10_000
     )
+    zero_teacher_policy = lambda obs, rng: (
+        jp.zeros(obs.shape[:-1] + (config.action_size,)),
+        {},
+    )
+    baseline_report = _evaluate_teacher(
+        jax,
+        teacher_eval_env,
+        zero_teacher_policy,
+        args.seed + 12_000,
+        min(args.teacher_eval_envs, 64),
+        args.episode_length,
+    )
+    (teacher_dir / "ik_baseline_evaluation.json").write_text(
+        json.dumps(baseline_report, indent=2), encoding="utf-8"
+    )
+    print(f"stage=ik_baseline {json.dumps(baseline_report, sort_keys=True)}", flush=True)
     checkpoint_kwargs = {}
     ppo_parameters = inspect.signature(ppo.train).parameters
     if "save_checkpoint_path" in ppo_parameters:
@@ -471,6 +496,40 @@ def main(argv=None):
         checkpoint_kwargs["restore_checkpoint_path"] = str(
             _resolve_latest_checkpoint(args.teacher_restore)
         )
+
+    best_teacher = {"score": None, "step": 0, "params": None, "metrics": {}}
+
+    def progress_fn(step, metrics):
+        best_teacher["metrics"] = metrics
+        _teacher_progress(step, metrics)
+
+    def policy_params_fn(step, make_policy, params):
+        del make_policy
+        summary = _teacher_eval_summary(best_teacher["metrics"])
+        reward_per_step = summary.get("reward_per_step")
+        if reward_per_step is None:
+            return
+        failure_rate = summary.get("failure_rate", 0.0)
+        score = reward_per_step - 2.0 * failure_rate
+        if best_teacher["score"] is None or score > best_teacher["score"]:
+            best_teacher.update(
+                score=score,
+                step=int(step),
+                params=params,
+                summary=summary,
+            )
+            model_io.save_params(teacher_dir / "params_best", params)
+            print(
+                f"stage=teacher_best step={int(step):,} score={score:.5f} "
+                f"mean_velocity_x={summary.get('mean_velocity_x', float('nan')):.5f} "
+                f"failure_rate={failure_rate:.5f}",
+                flush=True,
+            )
+
+    if "policy_params_fn" in ppo_parameters:
+        checkpoint_kwargs["policy_params_fn"] = policy_params_fn
+    else:
+        print("stage=teacher_best status=unsupported_by_installed_brax", flush=True)
 
     print(
         f"stage=teacher_train steps={args.teacher_steps:,} envs={args.teacher_envs} "
@@ -487,7 +546,7 @@ def main(argv=None):
         num_evals=args.teacher_evals,
         num_eval_envs=args.teacher_eval_envs,
         learning_rate=args.teacher_learning_rate,
-        entropy_cost=5e-3,
+        entropy_cost=args.teacher_entropy_cost,
         discounting=0.99,
         reward_scaling=1.0,
         unroll_length=args.teacher_unroll_length,
@@ -496,13 +555,24 @@ def main(argv=None):
         num_updates_per_batch=args.teacher_updates_per_batch,
         normalize_observations=True,
         network_factory=make_network_factory(args.teacher_hidden, "elu"),
-        progress_fn=_teacher_progress,
+        progress_fn=progress_fn,
         seed=args.seed,
         **checkpoint_kwargs,
     )
-    model_io.save_params(teacher_dir / "params", teacher_params)
-    teacher_policy = make_teacher_policy(teacher_params, deterministic=True)
-    print(f"stage=teacher_train status=done saved={teacher_dir / 'params'}", flush=True)
+    model_io.save_params(teacher_dir / "params_final", teacher_params)
+    selected_teacher_params = (
+        best_teacher["params"] if best_teacher["params"] is not None else teacher_params
+    )
+    selected_step = (
+        best_teacher["step"] if best_teacher["params"] is not None else args.teacher_steps
+    )
+    model_io.save_params(teacher_dir / "params", selected_teacher_params)
+    teacher_policy = make_teacher_policy(selected_teacher_params, deterministic=True)
+    print(
+        f"stage=teacher_train status=done selected_step={selected_step:,} "
+        f"saved={teacher_dir / 'params'}",
+        flush=True,
+    )
 
     teacher_report = _evaluate_teacher(
         jax,
@@ -519,6 +589,7 @@ def main(argv=None):
     teacher_report["accepted"] = teacher_accepted
     teacher_report["minimum_velocity_x"] = args.min_accepted_teacher_vx
     teacher_report["maximum_failure_rate"] = args.max_accepted_teacher_failure_rate
+    teacher_report["selected_step"] = selected_step
     (teacher_dir / "evaluation.json").write_text(
         json.dumps(teacher_report, indent=2), encoding="utf-8"
     )

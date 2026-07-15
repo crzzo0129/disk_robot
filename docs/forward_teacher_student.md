@@ -72,7 +72,10 @@ Teacher 和 DAgger 也从 `stand` 起步，然后默认用 25 个控制步（约
 mjx_runs/forward_ts/
   ik_reference.npz
   teacher/params/
+  teacher/params_best/
+  teacher/params_final/
   teacher/ppo_checkpoint/
+  teacher/ik_baseline_evaluation.json
   teacher/evaluation.json
   student_policy.npz
   student_policy.json
@@ -101,12 +104,19 @@ python -m scripts.evaluate_forward_student mjx_runs/forward_ts/student_policy.np
 
 默认门槛：
 
-- student 平均前进速度不低于 `0.04 m/s`；
+- 第一阶段目标速度为 `0.03 m/s`，与当前 IK 基线的实际速度匹配；
+- student 平均前进速度不低于 `0.02 m/s`；
 - 500 control steps 内失败率不高于 `10%`；
 - 最终评估环境使用 student 完整位置动作，完全不使用 IK 目标和 teacher residual。
 
 使用 `--strict-acceptance` 时，未达门槛会保留全部产物并以退出码 2 结束，避免把“脚本运行成功”误认为“student 已经学会”。
 Teacher 会在生成示范前先执行同样的前进速度和失败率验收；teacher 未达标时不会继续蒸馏。
+PPO 训练过程中会持续保存评价分数最高的 `teacher/params_best`，训练结束后使用最佳参数而非
+最后一次参数进行验收和蒸馏。当前阶段先得到稳定慢速前进，再通过 command curriculum 提速，
+避免要求小幅 residual 把 IK 基线速度一次提高数倍。
+速度跟踪奖励的宽度也按 `0.03 m/s` 目标收紧，避免原地站立获得接近目标步态的奖励。
+PPO 开始前会先用全零 residual 单独评估 IK，输出 `stage=ik_baseline` 并保存报告；因此可以
+区分“IK 基线本身不前进”和“PPO 把一个可用基线训练坏了”。
 
 ## 恢复 Teacher
 

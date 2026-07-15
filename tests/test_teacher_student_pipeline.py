@@ -26,6 +26,20 @@ def test_pipeline_smoke_and_stand_defaults_are_explicit():
     assert args.teacher_minibatches == 32
 
 
+def test_pipeline_defaults_match_the_stable_ik_baseline():
+    from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
+    from scripts.train_forward_teacher_student import parse_args
+
+    args = parse_args([])
+
+    assert args.command_vx == 0.03
+    assert args.min_accepted_teacher_vx == 0.02
+    assert args.min_accepted_vx == 0.02
+    assert args.teacher_learning_rate == 1e-4
+    assert args.teacher_entropy_cost == 1e-3
+    assert ForwardTeacherStudentConfig().velocity_sigma == 0.0004
+
+
 def test_teacher_env_has_privileged_residual_and_student_modes():
     source = open("disk_robot_mjx/teacher_student_env.py", encoding="utf-8").read()
 
@@ -45,6 +59,9 @@ def test_pipeline_produces_student_policy_and_evaluation_contract():
     assert 'args.out / "evaluation.json"' in source
     assert '"stand_source": "xml:keyframe:stand"' in source
     assert "_collect_dagger_dataset" in source
+    assert "policy_params_fn" in source
+    assert 'teacher_dir / "params_best"' in source
+    assert 'teacher_dir / "ik_baseline_evaluation.json"' in source
     assert 'make_forward_teacher_student_env(\n        "dagger"' in source
     assert 'make_forward_teacher_student_env(\n        "student"' in source
 

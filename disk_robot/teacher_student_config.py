@@ -25,7 +25,7 @@ class ForwardTeacherStudentConfig:
     terminate_upright: float = 0.65
     observation_history: int = 4
 
-    command_vx: float = 0.10
+    command_vx: float = 0.03
     student_action_scale: tuple[float, ...] = ACTION_SCALE
     residual_scale: tuple[float, ...] = RESIDUAL_SCALE
 
@@ -34,7 +34,7 @@ class ForwardTeacherStudentConfig:
     torque_limit: float = 3.0
 
     reward_velocity: float = 2.0
-    velocity_sigma: float = 0.0025
+    velocity_sigma: float = 0.0004
     reward_progress: float = 1.0
     reward_yaw: float = 0.4
     yaw_sigma: float = 0.10
