@@ -188,6 +188,8 @@ def make_forward_teacher_student_env(
                 motor_strength = jp.array(1.0)
                 control_delay = jp.array(0.0)
             last_push = jp.zeros(2)
+            smoothed_world_velocity = jp.zeros(2)
+            recovery_streak = jp.array(0, dtype=jp.int32)
             student_history = jp.zeros(self.config.student_observation_size)
             student_obs = self._update_student_history(
                 student_history,
@@ -208,6 +210,8 @@ def make_forward_teacher_student_env(
                 "last_push": last_push,
                 "motor_strength": motor_strength,
                 "control_delay": control_delay,
+                "smoothed_world_velocity": smoothed_world_velocity,
+                "recovery_streak": recovery_streak,
             }
             if self.role != "student":
                 actual_contacts = self._foot_contacts(data)
@@ -334,6 +338,27 @@ def make_forward_teacher_student_env(
 
             forward_velocity = world_velocity[0]
             velocity_error = forward_velocity - self.config.command_vx
+            smoothed_world_velocity = state.info["smoothed_world_velocity"] + (
+                self.config.recovery_velocity_ema_alpha
+                * (world_velocity[:2] - state.info["smoothed_world_velocity"])
+            )
+            smoothed_velocity_error = jp.abs(
+                smoothed_world_velocity[0] - self.config.command_vx
+            )
+            recovery_condition = (
+                (smoothed_velocity_error <= self.config.recovery_forward_tolerance)
+                & (
+                    jp.abs(smoothed_world_velocity[1])
+                    <= self.config.recovery_lateral_tolerance
+                )
+                & (upright >= 0.80)
+            )
+            recovery_streak = jp.where(
+                (post_push > 0.5) & recovery_condition,
+                state.info["recovery_streak"] + 1,
+                0,
+            ).astype(jp.int32)
+            recovery_ready = recovery_streak >= self.config.recovery_required_steps
             reward_terms = {
                 "velocity": self.config.reward_velocity
                 * jp.exp(
@@ -375,6 +400,8 @@ def make_forward_teacher_student_env(
                 "previous_target_ctrl": strength_target,
                 "student_action": student_action,
                 "last_push": applied_push,
+                "smoothed_world_velocity": smoothed_world_velocity,
+                "recovery_streak": recovery_streak,
             }
             if self.role != "student":
                 teacher_obs = self._teacher_obs(
@@ -409,6 +436,7 @@ def make_forward_teacher_student_env(
                 "yaw_rate": body_angular_velocity[2],
                 "abs_yaw_rate": jp.abs(body_angular_velocity[2]),
                 "velocity_error": jp.abs(velocity_error),
+                "smoothed_velocity_error": smoothed_velocity_error,
                 "roll_pitch_rate_rms": jp.sqrt(jp.mean(jp.square(body_angular_velocity[:2]))),
                 "upright": upright,
                 "torso_height": torso_height,
@@ -419,11 +447,7 @@ def make_forward_teacher_student_env(
                 "student_action_rms": jp.sqrt(jp.mean(jp.square(student_action))),
                 "push_applied": push_applied.astype(jp.float32),
                 "post_push": post_push,
-                "recovery_ready": (
-                    (jp.abs(velocity_error) <= 0.10)
-                    & (jp.abs(world_velocity[1]) <= 0.10)
-                    & (upright >= 0.80)
-                ).astype(jp.float32),
+                "recovery_ready": recovery_ready.astype(jp.float32),
                 "failed": failed,
                 "timeout": timeout_bool.astype(jp.float32),
             }
@@ -556,6 +580,7 @@ def make_forward_teacher_student_env(
                 "yaw_rate",
                 "abs_yaw_rate",
                 "velocity_error",
+                "smoothed_velocity_error",
                 "roll_pitch_rate_rms",
                 "upright",
                 "torso_height",

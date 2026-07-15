@@ -232,6 +232,15 @@ def test_rear_push_roll_preset_selects_motion_and_runtime_strength():
     assert args.force_limit == 6.0
 
 
+def test_negative_one_repeat_count_enables_unbounded_mode():
+    from scripts import simulate_extreme_disk_pose
+
+    args = simulate_extreme_disk_pose.parse_args(["--motion", "rear-push-roll", "--repeat-pushes", "-1"])
+
+    assert args.repeat_pushes == -1
+    assert args.repeat_foot_height == 0.028
+
+
 def test_rear_push_keeps_front_legs_folded():
     from scripts import simulate_extreme_disk_pose
 

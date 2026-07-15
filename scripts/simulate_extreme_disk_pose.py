@@ -26,6 +26,10 @@ class PlaybackState:
         self.switched = False
         self.push_start_time = None
         self.repeat_start_time = None
+        self.repeat_phase = None
+        self.repeat_phase_start = None
+        self.repeat_foot_targets = None
+        self.repeat_retract_ctrl = None
         self.repeat_count = 0
         self.rolling_angle = 0.0
         self._lock = threading.Lock()
@@ -103,13 +107,43 @@ def parse_args(argv=None):
         help="Minimum forward body speed before the rear push starts; <=0 disables phase gating.",
     )
     parser.add_argument("--push-trigger-timeout", type=float, help="Maximum extra seconds to wait for the push phase.")
-    parser.add_argument("--repeat-pushes", type=int, default=0, help="Number of extra pushes after the initial launch.")
+    parser.add_argument(
+        "--repeat-pushes",
+        type=int,
+        default=0,
+        help="Number of extra pushes after launch; use -1 to repeat indefinitely.",
+    )
     parser.add_argument("--turns-per-push", type=float, default=1.0, help="Disk revolutions between repeated pushes.")
     parser.add_argument(
         "--repeat-prepare-time",
         type=float,
-        default=0.20,
+        default=0.08,
         help="Seconds to move from rolling_folded back to the push preparation pose.",
+    )
+    parser.add_argument(
+        "--repeat-foot-height",
+        type=float,
+        default=0.028,
+        help="Maximum predicted rear-foot center height that permits a repeated push.",
+    )
+    parser.add_argument(
+        "--repeat-force-limit",
+        type=float,
+        default=1.0,
+        help="Rear-actuator force limit during repeated ground pushes.",
+    )
+    parser.add_argument("--repeat-seek-time", type=float, default=0.28, help="Maximum seconds used to seek ground contact.")
+    parser.add_argument(
+        "--repeat-stance-time",
+        type=float,
+        default=0.18,
+        help="Seconds to hold the rear feet near fixed world positions after contact.",
+    )
+    parser.add_argument(
+        "--repeat-foot-preload",
+        type=float,
+        default=0.004,
+        help="Downward world-space foot offset used to maintain stance contact.",
     )
     parser.add_argument("--headless", action="store_true", help="Run without the interactive viewer.")
     parser.add_argument("--steps", type=int, default=1000, help="Simulation steps for --headless.")
@@ -162,10 +196,18 @@ def parse_args(argv=None):
     args.stand_to_folded_time = 2.0 if args.stand_to_folded_time is None else args.stand_to_folded_time
     if args.push_scale is not None and not 0.0 <= args.push_scale <= 2.0:
         parser.error("--push-scale must be between 0 and 2")
-    if args.repeat_pushes < 0:
-        parser.error("--repeat-pushes must be non-negative")
+    if args.repeat_pushes < -1:
+        parser.error("--repeat-pushes must be -1 or non-negative")
     if args.turns_per_push <= 0.0:
         parser.error("--turns-per-push must be positive")
+    if args.repeat_foot_height <= 0.0:
+        parser.error("--repeat-foot-height must be positive")
+    if args.repeat_force_limit <= 0.0:
+        parser.error("--repeat-force-limit must be positive")
+    if args.repeat_seek_time <= 0.0 or args.repeat_stance_time <= 0.0:
+        parser.error("--repeat-seek-time and --repeat-stance-time must be positive")
+    if args.repeat_foot_preload < 0.0:
+        parser.error("--repeat-foot-preload must be non-negative")
     return args
 
 
@@ -417,7 +459,18 @@ def _disk_contact_count(data, disk_geom_id):
     return total
 
 
-def _status_line(model, data, torso_id, disk_geom_id, stage, alpha):
+def _body_contact_count(model, data, body_ids):
+    total = 0
+    for index in range(data.ncon):
+        contact = data.contact[index]
+        body1 = int(model.geom_bodyid[contact.geom1])
+        body2 = int(model.geom_bodyid[contact.geom2])
+        if body1 in body_ids or body2 in body_ids:
+            total += 1
+    return total
+
+
+def _status_line(model, data, torso_id, disk_geom_id, rear_foot_body_ids, stage, alpha):
     torso_pos = data.xpos[torso_id]
     velocity = data.cvel[torso_id]
     limits = model.actuator_forcerange[:, 1]
@@ -427,7 +480,7 @@ def _status_line(model, data, torso_id, disk_geom_id, stage, alpha):
         if limit > 0.0
     )
     limited_count = sum(float(limit) > 0.0 for limit in limits)
-    return format_status_line(
+    line = format_status_line(
         sim_time=float(data.time),
         stage=stage,
         alpha=alpha,
@@ -441,6 +494,7 @@ def _status_line(model, data, torso_id, disk_geom_id, stage, alpha):
         angular_velocity_y=float(velocity[1]),
         saturation_fraction=saturated / max(limited_count, 1),
     )
+    return f"{line} rear_foot_contacts={_body_contact_count(model, data, rear_foot_body_ids)}"
 
 
 def main(argv=None):
@@ -480,6 +534,17 @@ def main(argv=None):
         push_ctrl = tangential_rear_push_target(to_ctrl, args.push_scale or 0.0, ctrl_ranges)
     else:
         push_ctrl = partial_push_target(to_ctrl, middle_ctrl, args.push_scale or 0.0, ctrl_ranges)
+    repeat_plant_ctrl, repeat_push_ctrl = ground_rear_push_targets(to_ctrl, args.push_scale or 0.0, ctrl_ranges)
+    nominal_force_ranges = model.actuator_forcerange.copy()
+    probe_data = mujoco.MjData(model)
+    rear_foot_site_ids = (
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "leg_back_r_3_foot_site"),
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "leg_back_l_3_foot_site"),
+    )
+    rear_foot_body_ids = {
+        _body_id(mujoco, model, "leg_back_r_3"),
+        _body_id(mujoco, model, "leg_back_l_3"),
+    }
     torso_id = _body_id(mujoco, model, args.track_body)
     disk_geom_id = _geom_id(mujoco, model, args.disk_geom)
     state = PlaybackState()
@@ -488,6 +553,10 @@ def main(argv=None):
         state.switched = False
         state.push_start_time = None
         state.repeat_start_time = None
+        state.repeat_phase = None
+        state.repeat_phase_start = None
+        state.repeat_foot_targets = None
+        state.repeat_retract_ctrl = None
         state.repeat_count = 0
         state.rolling_angle = 0.0
         mujoco.mj_resetDataKeyframe(model, data, from_id)
@@ -603,7 +672,7 @@ def main(argv=None):
     def step_physics():
         stage, alpha = current_target()
         if not state.paused:
-            if state.switched and args.motion == "rear-push-roll" and args.repeat_pushes > 0:
+            if state.switched and args.motion == "rear-push-roll" and args.repeat_pushes != 0:
                 stage, alpha = update_repeated_push()
             else:
                 stage, alpha = update_target()
@@ -613,45 +682,144 @@ def main(argv=None):
         return stage, alpha
 
     def update_repeated_push():
-        if state.repeat_count >= args.repeat_pushes:
+        if args.repeat_pushes >= 0 and state.repeat_count >= args.repeat_pushes:
+            model.actuator_forcerange[:] = nominal_force_ranges
             data.ctrl[:] = rolling_ctrl
             return "rolling", 1.0
 
         trigger_angle = 2.0 * math.pi * args.turns_per_push
         if state.repeat_start_time is None:
-            if state.rolling_angle < trigger_angle:
+            predicted_foot_height = target_rear_foot_height(repeat_plant_ctrl)
+            phase_ready = predicted_foot_height <= args.repeat_foot_height
+            if state.rolling_angle < trigger_angle or not phase_ready:
+                model.actuator_forcerange[:] = nominal_force_ranges
                 data.ctrl[:] = rolling_ctrl
                 return "rolling", min(state.rolling_angle / trigger_angle, 1.0)
             state.repeat_start_time = float(data.time)
+            state.repeat_phase = "prepare"
+            state.repeat_phase_start = float(data.time)
             print(
-                f"repeat_push_start index={state.repeat_count + 1}/{args.repeat_pushes} "
-                f"t={data.time:.3f} accumulated_angle={state.rolling_angle:.3f}",
+                f"repeat_push_start index={state.repeat_count + 1}/"
+                f"{'infinite' if args.repeat_pushes < 0 else args.repeat_pushes} "
+                f"t={data.time:.3f} accumulated_angle={state.rolling_angle:.3f} "
+                f"predicted_rear_foot_z={predicted_foot_height:.4f}",
                 flush=True,
             )
 
-        elapsed = float(data.time) - state.repeat_start_time
-        stage, alpha = repeated_push_target(
-            elapsed,
-            args.repeat_prepare_time,
-            args.walk_to_stand_time,
-            args.stand_hold_time,
-            args.stand_to_folded_time,
-        )
-        if stage == "repeat_prepare":
-            data.ctrl[:] = lerp_sequence(rolling_ctrl, to_ctrl, smootherstep(alpha), ctrl_ranges)
-        elif stage == "repeat_push":
-            data.ctrl[:] = lerp_sequence(to_ctrl, push_ctrl, smootherstep(alpha), ctrl_ranges)
-        elif stage == "repeat_hold":
-            data.ctrl[:] = push_ctrl
-        elif stage == "repeat_retract":
-            data.ctrl[:] = lerp_sequence(push_ctrl, rolling_ctrl, smootherstep(alpha), ctrl_ranges)
+        model.actuator_forcerange[:] = nominal_force_ranges
+        model.actuator_forcerange[6:, 0] = -args.repeat_force_limit
+        model.actuator_forcerange[6:, 1] = args.repeat_force_limit
+
+        phase_elapsed = float(data.time) - state.repeat_phase_start
+        if state.repeat_phase == "prepare":
+            alpha = transition_alpha(phase_elapsed, args.repeat_prepare_time)
+            data.ctrl[:] = lerp_sequence(rolling_ctrl, repeat_plant_ctrl, smootherstep(alpha), ctrl_ranges)
+            stage = "repeat_prepare"
+            if alpha >= 1.0:
+                state.repeat_phase = "seek"
+                state.repeat_phase_start = float(data.time)
+        elif state.repeat_phase == "seek":
+            rear_contacts = _body_contact_count(model, data, rear_foot_body_ids)
+            disk_contacts = _disk_contact_count(data, disk_geom_id)
+            if rear_contacts > 0 and disk_contacts > 0:
+                state.repeat_phase = "stance"
+                state.repeat_phase_start = float(data.time)
+                state.repeat_foot_targets = [data.site_xpos[site_id].copy() for site_id in rear_foot_site_ids]
+                for target in state.repeat_foot_targets:
+                    target[2] -= args.repeat_foot_preload
+                print(
+                    f"repeat_stance_start index={state.repeat_count + 1} t={data.time:.3f} "
+                    f"rear_contacts={rear_contacts} disk_contacts={disk_contacts}",
+                    flush=True,
+                )
+                data.ctrl[:] = solve_rear_stance_targets(data.ctrl)
+                stage, alpha = "repeat_stance", 0.0
+            else:
+                alpha = transition_alpha(phase_elapsed, args.repeat_seek_time)
+                data.ctrl[:] = lerp_sequence(repeat_plant_ctrl, repeat_push_ctrl, smootherstep(alpha), ctrl_ranges)
+                stage = "repeat_seek"
+                if alpha >= 1.0:
+                    state.repeat_phase = "retract"
+                    state.repeat_phase_start = float(data.time)
+                    state.repeat_retract_ctrl = list(data.ctrl)
+                    print(f"repeat_contact_missed index={state.repeat_count + 1} t={data.time:.3f}", flush=True)
+        elif state.repeat_phase == "stance":
+            alpha = transition_alpha(phase_elapsed, args.repeat_stance_time)
+            data.ctrl[:] = solve_rear_stance_targets(data.ctrl)
+            stage = "repeat_stance"
+            if alpha >= 1.0:
+                state.repeat_phase = "retract"
+                state.repeat_phase_start = float(data.time)
+                state.repeat_retract_ctrl = list(data.ctrl)
+                print(f"repeat_stance_done index={state.repeat_count + 1} t={data.time:.3f}", flush=True)
+        elif state.repeat_phase == "retract":
+            alpha = transition_alpha(phase_elapsed, args.stand_to_folded_time)
+            data.ctrl[:] = lerp_sequence(state.repeat_retract_ctrl, rolling_ctrl, smootherstep(alpha), ctrl_ranges)
+            stage = "repeat_retract"
+            if alpha >= 1.0:
+                state.repeat_phase = "done"
         else:
+            stage, alpha = "repeat_done", 1.0
             data.ctrl[:] = rolling_ctrl
             state.repeat_count += 1
+            model.actuator_forcerange[:] = nominal_force_ranges
             state.repeat_start_time = None
+            state.repeat_phase = None
+            state.repeat_phase_start = None
+            state.repeat_foot_targets = None
+            state.repeat_retract_ctrl = None
             state.rolling_angle = 0.0
-            print(f"repeat_push_done index={state.repeat_count}/{args.repeat_pushes} t={data.time:.3f}", flush=True)
+            repeat_label = "infinite" if args.repeat_pushes < 0 else args.repeat_pushes
+            print(f"repeat_push_done index={state.repeat_count}/{repeat_label} t={data.time:.3f}", flush=True)
         return stage, alpha
+
+    def solve_rear_stance_targets(seed_ctrl):
+        target = [float(value) for value in seed_ctrl]
+        probe_data.qpos[:] = data.qpos
+        for leg_index, (actuator_1, actuator_3, site_id) in enumerate(((6, 8, rear_foot_site_ids[0]), (9, 11, rear_foot_site_ids[1]))):
+            desired = state.repeat_foot_targets[leg_index]
+            joint_1 = int(model.actuator_trnid[actuator_1, 0])
+            joint_3 = int(model.actuator_trnid[actuator_3, 0])
+            address_1 = int(model.jnt_qposadr[joint_1])
+            address_3 = int(model.jnt_qposadr[joint_3])
+            q1, q3 = target[actuator_1], target[actuator_3]
+            for _ in range(4):
+                probe_data.qpos[address_1] = q1
+                probe_data.qpos[address_3] = q3
+                mujoco.mj_forward(model, probe_data)
+                position = probe_data.site_xpos[site_id].copy()
+                error_x = float(desired[0] - position[0])
+                error_z = float(desired[2] - position[2])
+                if error_x * error_x + error_z * error_z < 1e-8:
+                    break
+                epsilon = 1e-4
+                columns = []
+                for address, angle in ((address_1, q1), (address_3, q3)):
+                    probe_data.qpos[address] = angle + epsilon
+                    mujoco.mj_forward(model, probe_data)
+                    shifted = probe_data.site_xpos[site_id]
+                    columns.append(((float(shifted[0]) - float(position[0])) / epsilon, (float(shifted[2]) - float(position[2])) / epsilon))
+                    probe_data.qpos[address] = angle
+                determinant = columns[0][0] * columns[1][1] - columns[1][0] * columns[0][1]
+                if abs(determinant) < 1e-7:
+                    break
+                delta_1 = (error_x * columns[1][1] - columns[1][0] * error_z) / determinant
+                delta_3 = (columns[0][0] * error_z - error_x * columns[0][1]) / determinant
+                q1 += min(max(delta_1, -0.15), 0.15)
+                q3 += min(max(delta_3, -0.15), 0.15)
+                q1 = min(max(q1, ctrl_ranges[actuator_1][0]), ctrl_ranges[actuator_1][1])
+                q3 = min(max(q3, ctrl_ranges[actuator_3][0]), ctrl_ranges[actuator_3][1])
+            target[actuator_1], target[actuator_3] = q1, q3
+        return target
+
+    def target_rear_foot_height(target_ctrl):
+        probe_data.qpos[:] = data.qpos
+        for actuator_id, target in enumerate(target_ctrl):
+            joint_id = int(model.actuator_trnid[actuator_id, 0])
+            qpos_address = int(model.jnt_qposadr[joint_id])
+            probe_data.qpos[qpos_address] = target
+        mujoco.mj_forward(model, probe_data)
+        return min(float(probe_data.site_xpos[site_id][2]) for site_id in rear_foot_site_ids)
 
     def key_callback(keycode):
         if keycode == 32:
@@ -717,9 +885,9 @@ def main(argv=None):
         for _ in range(max(args.steps, 0)):
             stage, alpha = step_physics()
             if data.time - last_status_time >= args.status_interval:
-                print(_status_line(model, data, torso_id, disk_geom_id, stage, alpha), flush=True)
+                print(_status_line(model, data, torso_id, disk_geom_id, rear_foot_body_ids, stage, alpha), flush=True)
                 last_status_time = data.time
-        print(_status_line(model, data, torso_id, disk_geom_id, stage, alpha), flush=True)
+        print(_status_line(model, data, torso_id, disk_geom_id, rear_foot_body_ids, stage, alpha), flush=True)
         return
 
     print(KEY_HELP.strip(), flush=True)
@@ -738,7 +906,10 @@ def main(argv=None):
                 stage, alpha = step_physics()
                 window.cam.lookat[:] = data.xpos[torso_id]
                 if data.time - last_status_time >= args.status_interval:
-                    print(_status_line(model, data, torso_id, disk_geom_id, stage, alpha), flush=True)
+                    print(
+                        _status_line(model, data, torso_id, disk_geom_id, rear_foot_body_ids, stage, alpha),
+                        flush=True,
+                    )
                     last_status_time = data.time
             window.sync()
             time.sleep(model.opt.timestep)

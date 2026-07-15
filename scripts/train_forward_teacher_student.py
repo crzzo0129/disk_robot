@@ -61,14 +61,18 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-disturbances", action="store_true")
     parser.add_argument("--push-step-min", type=int, default=100)
     parser.add_argument("--push-step-max", type=int, default=350)
-    parser.add_argument("--push-velocity-x", type=float, default=0.20)
-    parser.add_argument("--push-velocity-y", type=float, default=0.15)
+    parser.add_argument("--push-velocity-x", type=float, default=0.50)
+    parser.add_argument("--push-velocity-y", type=float, default=0.40)
     parser.add_argument("--motor-strength-min", type=float, default=0.85)
     parser.add_argument("--motor-strength-max", type=float, default=1.15)
     parser.add_argument("--control-delay-probability", type=float, default=0.50)
     parser.add_argument("--disturbance-reset-joint-noise", type=float, default=0.030)
     parser.add_argument("--disturbance-reset-height-noise", type=float, default=0.005)
     parser.add_argument("--recovery-window-steps", type=int, default=100)
+    parser.add_argument("--recovery-velocity-ema-alpha", type=float, default=0.10)
+    parser.add_argument("--recovery-forward-tolerance", type=float, default=0.04)
+    parser.add_argument("--recovery-lateral-tolerance", type=float, default=0.04)
+    parser.add_argument("--recovery-required-steps", type=int, default=4)
     parser.add_argument("--min-disturbed-score-improvement", type=float, default=0.02)
     parser.add_argument("--min-accepted-teacher-vx", type=float, default=None)
     parser.add_argument("--max-accepted-teacher-failure-rate", type=float, default=0.10)
@@ -425,6 +429,7 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
             next_state.metrics["abs_velocity_y"],
             next_state.metrics["abs_yaw_rate"],
             next_state.metrics["velocity_error"],
+            next_state.metrics["smoothed_velocity_error"],
             next_state.metrics["roll_pitch_rate_rms"],
             next_state.metrics["disk_contact_count"],
             next_state.metrics["push_applied"],
@@ -447,6 +452,7 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         abs_vy,
         abs_yaw_rate,
         velocity_error,
+        smoothed_velocity_error,
         roll_pitch_rate,
         disk_contact,
         push_applied,
@@ -486,6 +492,9 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         "mean_roll_pitch_rate_rms": float(np.sum(roll_pitch_rate * alive) / denominator),
         "mean_disk_contacts": float(np.sum(disk_contact * alive) / denominator),
         "mean_post_push_velocity_error": float(
+            np.sum(smoothed_velocity_error * post_push_alive) / post_push_denominator
+        ),
+        "mean_post_push_instantaneous_velocity_error": float(
             np.sum(velocity_error * post_push_alive) / post_push_denominator
         ),
         "mean_post_push_abs_velocity_y": float(
@@ -668,6 +677,12 @@ def main(argv=None):
         raise SystemExit("push steps must satisfy 0 < min <= max < episode length")
     if not 0.0 < args.motor_strength_min <= args.motor_strength_max:
         raise SystemExit("motor strength range must be positive and ordered")
+    if not 0.0 < args.recovery_velocity_ema_alpha <= 1.0:
+        raise SystemExit("--recovery-velocity-ema-alpha must be in (0, 1]")
+    if args.recovery_forward_tolerance <= 0.0 or args.recovery_lateral_tolerance <= 0.0:
+        raise SystemExit("recovery velocity tolerances must be positive")
+    if args.recovery_required_steps < 1:
+        raise SystemExit("--recovery-required-steps must be at least 1")
     if args.smoke:
         args.teacher_steps = min(args.teacher_steps, 20_000)
         args.teacher_envs = min(args.teacher_envs, 64)
@@ -739,6 +754,10 @@ def main(argv=None):
         disturbance_reset_joint_noise=args.disturbance_reset_joint_noise,
         disturbance_reset_height_noise=args.disturbance_reset_height_noise,
         recovery_window_steps=args.recovery_window_steps,
+        recovery_velocity_ema_alpha=args.recovery_velocity_ema_alpha,
+        recovery_forward_tolerance=args.recovery_forward_tolerance,
+        recovery_lateral_tolerance=args.recovery_lateral_tolerance,
+        recovery_required_steps=args.recovery_required_steps,
         residual_scale=tuple(
             value * args.residual_scale_multiplier
             for value in ForwardTeacherStudentConfig().residual_scale

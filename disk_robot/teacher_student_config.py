@@ -33,14 +33,18 @@ class ForwardTeacherStudentConfig:
     disturbance_enabled: bool = False
     push_step_min: int = 100
     push_step_max: int = 350
-    push_velocity_x: float = 0.20
-    push_velocity_y: float = 0.15
+    push_velocity_x: float = 0.50
+    push_velocity_y: float = 0.40
     motor_strength_min: float = 0.85
     motor_strength_max: float = 1.15
     control_delay_probability: float = 0.50
     disturbance_reset_joint_noise: float = 0.030
     disturbance_reset_height_noise: float = 0.005
     recovery_window_steps: int = 100
+    recovery_velocity_ema_alpha: float = 0.10
+    recovery_forward_tolerance: float = 0.04
+    recovery_lateral_tolerance: float = 0.04
+    recovery_required_steps: int = 4
 
     actuator_kp: float = 10.0
     actuator_kd: float = 0.4

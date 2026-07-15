@@ -28,6 +28,8 @@ def test_teacher_student_observation_contract_is_explicit():
     assert config.student_observation_size == 192
     assert config.privileged_size == 39
     assert config.teacher_observation_size == 231
+    assert config.recovery_velocity_ema_alpha == 0.10
+    assert config.recovery_required_steps == 4
     assert len(config.student_action_scale) == 12
     assert len(config.residual_scale) == 12
 

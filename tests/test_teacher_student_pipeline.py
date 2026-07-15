@@ -32,8 +32,12 @@ def test_pipeline_smoke_and_stand_defaults_are_explicit():
     assert args.teacher_zero_policy_init
     assert args.teacher_selection_mode == "improve"
     assert not args.teacher_disturbances
-    assert args.push_velocity_x == 0.20
-    assert args.push_velocity_y == 0.15
+    assert args.push_velocity_x == 0.50
+    assert args.push_velocity_y == 0.40
+    assert args.recovery_velocity_ema_alpha == 0.10
+    assert args.recovery_forward_tolerance == 0.04
+    assert args.recovery_lateral_tolerance == 0.04
+    assert args.recovery_required_steps == 4
     assert not args.allow_ik_baseline_teacher
     assert not args.teacher_only
 
@@ -239,6 +243,8 @@ def test_teacher_env_has_privileged_residual_and_student_modes():
     assert 'state.info["push_velocity"]' in source
     assert 'state.info["motor_strength"]' in source
     assert 'state.info["control_delay"]' in source
+    assert 'state.info["smoothed_world_velocity"]' in source
+    assert 'state.info["recovery_streak"]' in source
     assert '"mean_post_push_velocity_error"' in open(
         "scripts/train_forward_teacher_student.py", encoding="utf-8"
     ).read()

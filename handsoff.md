@@ -266,6 +266,12 @@ T2a is now implemented locally with:
 Friction, mass, and COM randomization are intentionally deferred to T2b because they require
 per-environment MJX model randomization. Do not add them until T2a push recovery is calibrated.
 
+After the first smoke showed one-step recovery and an almost unaffected IK baseline, the
+default push was raised from `0.20/0.15` to `0.50/0.40 m/s`. Recovery now uses an EMA of
+world XY velocity (`alpha=0.10`) and requires four consecutive control steps within
+`0.04 m/s` forward and lateral tolerances. Raw post-push instantaneous error is still
+reported separately.
+
 Run the cloud smoke first:
 
 ```bash
