@@ -140,3 +140,4 @@ def test_t4_uses_student_rollouts_and_frozen_teacher_labels():
     assert '"student_dagger_retention"' in source
     assert "student_policy_dagger_round_" in source
     assert 'args.out / "student_policy_dagger.npz"' in source
+    assert source.count("paired_evaluation_seed,") == 2

@@ -349,6 +349,7 @@ def main(argv=None):
     )
 
     round_reports = []
+    paired_evaluation_seed = args.seed + 50_000
     initial_report = _evaluate_round(
         jax,
         jp,
@@ -357,7 +358,7 @@ def main(argv=None):
         student_params,
         obs_mean,
         obs_std,
-        args.seed + 50_000,
+        paired_evaluation_seed,
         args.eval_envs,
         config.max_episode_steps,
         teacher_evaluation,
@@ -454,7 +455,7 @@ def main(argv=None):
             student_params,
             obs_mean,
             obs_std,
-            args.seed + 90_000 + 2_000 * round_index,
+            paired_evaluation_seed,
             args.eval_envs,
             config.max_episode_steps,
             teacher_evaluation,

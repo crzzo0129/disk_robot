@@ -385,6 +385,7 @@ collection alone is insufficient when each supervised update can move the policy
 - anchors each round to that round's starting Student action function;
 - uses a `1e-5` default learning rate and configurable `--anchor-weight` (default `1.0`);
 - evaluates every DAgger round and saves each round separately;
+- uses identical paired evaluation seeds for every round so policy deltas are comparable;
 - selects an accepted round first, otherwise the highest-scoring round;
 - uses no Teacher blend during evaluation or in the deployed Student;
 - never updates or overwrites Teacher or T3 artifacts.
