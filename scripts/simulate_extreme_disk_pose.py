@@ -1,5 +1,6 @@
 """Physically simulate a robot through staged pose transitions."""
 import argparse
+import math
 import threading
 import time
 from pathlib import Path
@@ -24,6 +25,9 @@ class PlaybackState:
         self.paused = False
         self.switched = False
         self.push_start_time = None
+        self.repeat_start_time = None
+        self.repeat_count = 0
+        self.rolling_angle = 0.0
         self._lock = threading.Lock()
         self._commands = []
 
@@ -64,6 +68,18 @@ def parse_args(argv=None):
         default="simultaneous",
         help="Coordination used for the standing-to-folded transition.",
     )
+    parser.add_argument(
+        "--folded-style",
+        choices=("keyframe", "balanced"),
+        default="keyframe",
+        help="Use the XML folded pose or a COM-balanced rolling pose.",
+    )
+    parser.add_argument(
+        "--rolling-pose",
+        choices=("folded", "axial"),
+        default="axial",
+        help="Pose held after push; axial tucks the complete COM close to the disk axis.",
+    )
     parser.add_argument("--walk-to-stand-time", type=float, help="Seconds to move from the first pose to the middle pose.")
     parser.add_argument("--stand-hold-time", type=float, help="Seconds to hold the middle pose.")
     parser.add_argument("--stand-to-folded-time", type=float, help="Seconds to move from the middle pose to the final pose.")
@@ -77,9 +93,9 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--push-style",
-        choices=("tangent", "keyframe"),
+        choices=("ground", "tangent", "keyframe"),
         default="tangent",
-        help="Use a near-horizontal rear-foot path or the legacy rear_push keyframe.",
+        help="Plant and sweep the rear feet, swing them tangentially, or use the legacy keyframe.",
     )
     parser.add_argument(
         "--push-trigger-speed",
@@ -87,6 +103,14 @@ def parse_args(argv=None):
         help="Minimum forward body speed before the rear push starts; <=0 disables phase gating.",
     )
     parser.add_argument("--push-trigger-timeout", type=float, help="Maximum extra seconds to wait for the push phase.")
+    parser.add_argument("--repeat-pushes", type=int, default=0, help="Number of extra pushes after the initial launch.")
+    parser.add_argument("--turns-per-push", type=float, default=1.0, help="Disk revolutions between repeated pushes.")
+    parser.add_argument(
+        "--repeat-prepare-time",
+        type=float,
+        default=0.20,
+        help="Seconds to move from rolling_folded back to the push preparation pose.",
+    )
     parser.add_argument("--headless", action="store_true", help="Run without the interactive viewer.")
     parser.add_argument("--steps", type=int, default=1000, help="Simulation steps for --headless.")
     parser.add_argument("--status-interval", type=float, default=3, help="Seconds between status prints.")
@@ -106,7 +130,8 @@ def parse_args(argv=None):
         # The fold excites a large backward roll. This is only a minimum hold;
         # phase gating below waits for the first sufficiently fast forward return.
         args.folded_hold_time = 0.3 if args.folded_hold_time is None else args.folded_hold_time
-        args.walk_to_stand_time = 0.28 if args.walk_to_stand_time is None else args.walk_to_stand_time
+        if args.walk_to_stand_time is None:
+            args.walk_to_stand_time = 0.45 if args.push_style == "ground" else 0.28
         args.stand_hold_time = 0.04 if args.stand_hold_time is None else args.stand_hold_time
         args.stand_to_folded_time = 0.14 if args.stand_to_folded_time is None else args.stand_to_folded_time
         args.push_scale = 1.0 if args.push_scale is None else args.push_scale
@@ -135,8 +160,12 @@ def parse_args(argv=None):
     args.switch_time = 0.5 if args.switch_time is None else args.switch_time
     args.stand_hold_time = 0.5 if args.stand_hold_time is None else args.stand_hold_time
     args.stand_to_folded_time = 2.0 if args.stand_to_folded_time is None else args.stand_to_folded_time
-    if args.push_scale is not None and not 0.0 <= args.push_scale <= 1.0:
-        parser.error("--push-scale must be between 0 and 1")
+    if args.push_scale is not None and not 0.0 <= args.push_scale <= 2.0:
+        parser.error("--push-scale must be between 0 and 2")
+    if args.repeat_pushes < 0:
+        parser.error("--repeat-pushes must be non-negative")
+    if args.turns_per_push <= 0.0:
+        parser.error("--turns-per-push must be positive")
     return args
 
 
@@ -179,9 +208,51 @@ def tangential_rear_push_target(folded_ctrl, push_scale=1.0, ranges=None):
     full_push = list(folded_ctrl)
     # Values were selected from the compiled Pupper kinematics. Relative to the
     # folded pose, each rear foot moves about 78 mm backward and <0.1 mm vertically.
-    full_push[6:9] = [-1.4, 0.0, 0.05]
-    full_push[9:12] = [1.4, 0.0, -0.05]
+    if folded_ctrl[6] < -2.5:
+        full_push[6:9] = [-2.9, 0.0, 1.94]
+        full_push[9:12] = [2.9, 0.0, -1.94]
+    else:
+        full_push[6:9] = [-1.4, 0.0, 0.05]
+        full_push[9:12] = [1.4, 0.0, -0.05]
     return partial_push_target(folded_ctrl, full_push, push_scale, ranges)
+
+
+def balanced_folded_target(keyframe_folded_ctrl):
+    """Fold rear-leg mass forward so the complete robot COM lies near the disk axis."""
+    if len(keyframe_folded_ctrl) != 12:
+        raise ValueError("The balanced Pupper fold expects 12 actuator targets")
+    target = list(keyframe_folded_ctrl)
+    target[6:9] = [-3.0, 0.0, 2.65]
+    target[9:12] = [3.0, 0.0, -2.65]
+    return target
+
+
+def axial_rolling_target(folded_ctrl):
+    """Compact all legs so the complete COM is close to the disk's X-Z axis position."""
+    if len(folded_ctrl) != 12:
+        raise ValueError("The axial Pupper rolling pose expects 12 actuator targets")
+    target = list(folded_ctrl)
+    target[0:3] = [-2.1452, 0.0, -1.0750]
+    target[3:6] = [2.1452, 0.0, 1.0750]
+    target[6:9] = [-2.2855, 0.0, -2.2500]
+    target[9:12] = [2.2855, 0.0, 2.2500]
+    return target
+
+
+def ground_rear_push_targets(folded_ctrl, push_scale=1.0, ranges=None):
+    """Return rear-foot planting and backward-sweep targets for the XML folded pose."""
+    if len(folded_ctrl) != 12:
+        raise ValueError("The grounded Pupper push expects 12 actuator targets")
+    plant = list(folded_ctrl)
+    plant[6:9] = [-0.62, 0.0, 0.48]
+    plant[9:12] = [0.62, 0.0, -0.48]
+    full_push = list(plant)
+    full_push[6:9] = [-0.76, 0.0, -0.30]
+    full_push[9:12] = [0.76, 0.0, 0.30]
+    push = partial_push_target(plant, full_push, push_scale, ranges)
+    if ranges is not None:
+        plant = lerp_sequence(plant, plant, 1.0, ranges)
+    return plant, push
 
 
 def folding_target(
@@ -261,6 +332,23 @@ def rear_push_roll_target(
     if return_alpha < 1.0:
         return "push_to_folded", return_alpha
     return "rolling", 1.0
+
+
+def repeated_push_target(elapsed, prepare_time, push_time, push_hold_time, retract_time):
+    prepare_alpha = transition_alpha(elapsed, prepare_time)
+    if prepare_alpha < 1.0:
+        return "repeat_prepare", prepare_alpha
+    push_start = max(prepare_time, 0.0)
+    push_alpha = transition_alpha(elapsed - push_start, push_time)
+    if push_alpha < 1.0:
+        return "repeat_push", push_alpha
+    hold_end = push_start + max(push_time, 0.0) + max(push_hold_time, 0.0)
+    if elapsed < hold_end:
+        return "repeat_hold", 0.0
+    retract_alpha = transition_alpha(elapsed - hold_end, retract_time)
+    if retract_alpha < 1.0:
+        return "repeat_retract", retract_alpha
+    return "repeat_done", 1.0
 
 
 def step_target_alpha(sim_time, switch_time, transition_time):
@@ -377,8 +465,18 @@ def main(argv=None):
     from_ctrl = _keyframe_ctrl(model, from_id)
     middle_ctrl = _keyframe_ctrl(model, middle_id)
     to_ctrl = _keyframe_ctrl(model, to_id)
+    if args.motion == "rear-push-roll" and args.folded_style == "balanced":
+        to_ctrl = balanced_folded_target(to_ctrl)
+    if args.rolling_pose == "axial":
+        rolling_id = _keyframe_id(mujoco, model, "rolling_folded")
+        rolling_ctrl = _keyframe_ctrl(model, rolling_id)
+    else:
+        rolling_ctrl = to_ctrl
     ctrl_ranges = _control_ranges(model)
-    if args.push_style == "tangent":
+    plant_ctrl = None
+    if args.push_style == "ground":
+        plant_ctrl, push_ctrl = ground_rear_push_targets(to_ctrl, args.push_scale or 0.0, ctrl_ranges)
+    elif args.push_style == "tangent":
         push_ctrl = tangential_rear_push_target(to_ctrl, args.push_scale or 0.0, ctrl_ranges)
     else:
         push_ctrl = partial_push_target(to_ctrl, middle_ctrl, args.push_scale or 0.0, ctrl_ranges)
@@ -389,6 +487,9 @@ def main(argv=None):
     def reset_simulation():
         state.switched = False
         state.push_start_time = None
+        state.repeat_start_time = None
+        state.repeat_count = 0
+        state.rolling_angle = 0.0
         mujoco.mj_resetDataKeyframe(model, data, from_id)
         data.ctrl[:] = from_ctrl
         mujoco.mj_forward(model, data)
@@ -421,18 +522,25 @@ def main(argv=None):
             elif stage == "folded_hold":
                 data.ctrl[:] = to_ctrl
             elif stage == "folded_to_push":
-                data.ctrl[:] = lerp_sequence(to_ctrl, push_ctrl, smootherstep(alpha), ctrl_ranges)
+                if plant_ctrl is None:
+                    data.ctrl[:] = lerp_sequence(to_ctrl, push_ctrl, smootherstep(alpha), ctrl_ranges)
+                elif alpha < 0.55:
+                    data.ctrl[:] = lerp_sequence(to_ctrl, plant_ctrl, smootherstep(alpha / 0.55), ctrl_ranges)
+                else:
+                    sweep_alpha = (alpha - 0.55) / 0.45
+                    data.ctrl[:] = lerp_sequence(plant_ctrl, push_ctrl, smootherstep(sweep_alpha), ctrl_ranges)
             elif stage == "push_hold":
                 data.ctrl[:] = push_ctrl
             elif stage == "push_to_folded":
-                data.ctrl[:] = lerp_sequence(push_ctrl, to_ctrl, smootherstep(alpha), ctrl_ranges)
+                data.ctrl[:] = lerp_sequence(push_ctrl, rolling_ctrl, smootherstep(alpha), ctrl_ranges)
             elif stage == "walk_to_stand":
                 data.ctrl[:] = lerp_sequence(from_ctrl, middle_ctrl, alpha, ctrl_ranges)
             elif stage in ("stand_hold", "stand_to_folded"):
                 fold_alpha = 0.0 if stage == "stand_hold" else alpha
                 data.ctrl[:] = lerp_sequence(middle_ctrl, to_ctrl, fold_alpha, ctrl_ranges)
             else:
-                data.ctrl[:] = lerp_sequence(middle_ctrl, to_ctrl, 1.0, ctrl_ranges)
+                final_ctrl = rolling_ctrl if args.motion == "rear-push-roll" else to_ctrl
+                data.ctrl[:] = lerp_sequence(middle_ctrl, final_ctrl, 1.0, ctrl_ranges)
         finished_stage = "rolling" if args.motion == "rear-push-roll" else "folded"
         if not state.switched and stage == finished_stage:
             state.switched = True
@@ -495,8 +603,54 @@ def main(argv=None):
     def step_physics():
         stage, alpha = current_target()
         if not state.paused:
-            stage, alpha = update_target()
+            if state.switched and args.motion == "rear-push-roll" and args.repeat_pushes > 0:
+                stage, alpha = update_repeated_push()
+            else:
+                stage, alpha = update_target()
             mujoco.mj_step(model, data)
+            if state.switched and state.repeat_start_time is None:
+                state.rolling_angle += max(float(data.cvel[torso_id][1]), 0.0) * model.opt.timestep
+        return stage, alpha
+
+    def update_repeated_push():
+        if state.repeat_count >= args.repeat_pushes:
+            data.ctrl[:] = rolling_ctrl
+            return "rolling", 1.0
+
+        trigger_angle = 2.0 * math.pi * args.turns_per_push
+        if state.repeat_start_time is None:
+            if state.rolling_angle < trigger_angle:
+                data.ctrl[:] = rolling_ctrl
+                return "rolling", min(state.rolling_angle / trigger_angle, 1.0)
+            state.repeat_start_time = float(data.time)
+            print(
+                f"repeat_push_start index={state.repeat_count + 1}/{args.repeat_pushes} "
+                f"t={data.time:.3f} accumulated_angle={state.rolling_angle:.3f}",
+                flush=True,
+            )
+
+        elapsed = float(data.time) - state.repeat_start_time
+        stage, alpha = repeated_push_target(
+            elapsed,
+            args.repeat_prepare_time,
+            args.walk_to_stand_time,
+            args.stand_hold_time,
+            args.stand_to_folded_time,
+        )
+        if stage == "repeat_prepare":
+            data.ctrl[:] = lerp_sequence(rolling_ctrl, to_ctrl, smootherstep(alpha), ctrl_ranges)
+        elif stage == "repeat_push":
+            data.ctrl[:] = lerp_sequence(to_ctrl, push_ctrl, smootherstep(alpha), ctrl_ranges)
+        elif stage == "repeat_hold":
+            data.ctrl[:] = push_ctrl
+        elif stage == "repeat_retract":
+            data.ctrl[:] = lerp_sequence(push_ctrl, rolling_ctrl, smootherstep(alpha), ctrl_ranges)
+        else:
+            data.ctrl[:] = rolling_ctrl
+            state.repeat_count += 1
+            state.repeat_start_time = None
+            state.rolling_angle = 0.0
+            print(f"repeat_push_done index={state.repeat_count}/{args.repeat_pushes} t={data.time:.3f}", flush=True)
         return stage, alpha
 
     def key_callback(keycode):
@@ -533,6 +687,8 @@ def main(argv=None):
             f"front_fold_time={args.front_fold_time:.3f}s "
             f"rear_fold_time={args.rear_fold_time:.3f}s "
             f"fold_order={args.fold_order} "
+            f"folded_style={args.folded_style} "
+            f"rolling_pose={args.rolling_pose} "
             f"folded_hold_time={args.folded_hold_time:.3f}s "
             f"folded_to_push_time={args.walk_to_stand_time:.3f}s "
             f"push_hold_time={args.stand_hold_time:.3f}s "
@@ -540,6 +696,7 @@ def main(argv=None):
             f"push_style={args.push_style} push_scale={args.push_scale:.3f}; "
             f"push_trigger_speed={args.push_trigger_speed:.3f}m/s "
             f"push_trigger_timeout={args.push_trigger_timeout:.3f}s; "
+            f"repeat_pushes={args.repeat_pushes} turns_per_push={args.turns_per_push:.3f}; "
             "the folded target stays fixed while the robot rolls.",
             flush=True,
         )

@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
-from dataclasses import asdict
+import math
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -53,10 +54,22 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-restore", type=Path, default=None)
     parser.add_argument(
         "--teacher-selection-mode",
-        choices=("improve", "preserve"),
+        choices=("improve", "preserve", "robust"),
         default="improve",
-        help="Select PPO only when it improves score, or for teacher-only T1b when it preserves IK.",
+        help="Select by nominal improvement, T1b preservation, or the T2 nominal/disturbed gate.",
     )
+    parser.add_argument("--teacher-disturbances", action="store_true")
+    parser.add_argument("--push-step-min", type=int, default=100)
+    parser.add_argument("--push-step-max", type=int, default=350)
+    parser.add_argument("--push-velocity-x", type=float, default=0.20)
+    parser.add_argument("--push-velocity-y", type=float, default=0.15)
+    parser.add_argument("--motor-strength-min", type=float, default=0.85)
+    parser.add_argument("--motor-strength-max", type=float, default=1.15)
+    parser.add_argument("--control-delay-probability", type=float, default=0.50)
+    parser.add_argument("--disturbance-reset-joint-noise", type=float, default=0.030)
+    parser.add_argument("--disturbance-reset-height-noise", type=float, default=0.005)
+    parser.add_argument("--recovery-window-steps", type=int, default=100)
+    parser.add_argument("--min-disturbed-score-improvement", type=float, default=0.02)
     parser.add_argument("--min-accepted-teacher-vx", type=float, default=None)
     parser.add_argument("--max-accepted-teacher-failure-rate", type=float, default=0.10)
     parser.add_argument("--max-accepted-teacher-velocity-error", type=float, default=0.03)
@@ -242,6 +255,63 @@ def _should_select_ppo(selection_mode, ppo_score, baseline_score, preserves_base
     )
 
 
+def _disturbed_teacher_score(report):
+    return (
+        _teacher_selection_score(report)
+        - 3.0 * report.get("failure_rate", 0.0)
+        - 1.0 * report.get("mean_post_push_velocity_error", 0.0)
+        - 0.5 * report.get("mean_recovery_time", 0.0)
+        - 0.5 * report.get("mean_disk_contacts", 0.0)
+        + 0.2 * report.get("mean_forward_distance", 0.0)
+    )
+
+
+def _ppo_improves_disturbed_baseline(ppo_report, baseline_report, minimum_score_gain=0.02):
+    ppo_score = _disturbed_teacher_score(ppo_report)
+    baseline_score = _disturbed_teacher_score(baseline_report)
+    preserves_safety = (
+        ppo_report["failure_rate"] <= baseline_report["failure_rate"]
+        and ppo_report["mean_post_push_velocity_error"]
+        <= baseline_report["mean_post_push_velocity_error"]
+        and ppo_report["mean_recovery_time"] <= baseline_report["mean_recovery_time"]
+        and ppo_report["mean_disk_contacts"] <= baseline_report["mean_disk_contacts"] + 0.01
+        and ppo_report["mean_forward_distance"]
+        >= baseline_report["mean_forward_distance"] - 0.02
+    )
+    return preserves_safety and ppo_score >= baseline_score + minimum_score_gain
+
+
+def _estimate_brax_timesteps(
+    requested_steps, num_evals, batch_size, num_minibatches, unroll_length
+):
+    intervals = max(int(num_evals) - 1, 1)
+    step_quantum = int(batch_size) * int(num_minibatches) * int(unroll_length)
+    batches_per_interval = max(1, math.ceil(requested_steps / intervals / step_quantum))
+    return {
+        "requested_steps": int(requested_steps),
+        "step_quantum": step_quantum,
+        "evaluation_intervals": intervals,
+        "estimated_effective_steps": step_quantum * batches_per_interval * intervals,
+    }
+
+
+def _teacher_gate_acceptance(
+    selection_mode,
+    selected_source,
+    absolute_thresholds_passed,
+    preserves_nominal,
+    improves_disturbed,
+    allow_ik_baseline_teacher=False,
+):
+    if selection_mode == "preserve":
+        return selected_source == "ppo" and preserves_nominal
+    if selection_mode == "robust":
+        return selected_source == "ppo" and preserves_nominal and improves_disturbed
+    return absolute_thresholds_passed and (
+        selected_source == "ppo" or allow_ik_baseline_teacher
+    )
+
+
 def _student_init(jax, jp, key, layer_sizes):
     keys = jax.random.split(key, len(layer_sizes) - 1)
     params = []
@@ -356,6 +426,10 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
             next_state.metrics["abs_yaw_rate"],
             next_state.metrics["velocity_error"],
             next_state.metrics["roll_pitch_rate_rms"],
+            next_state.metrics["disk_contact_count"],
+            next_state.metrics["push_applied"],
+            next_state.metrics["post_push"],
+            next_state.metrics["recovery_ready"],
             next_state.metrics["failed"],
             alive,
         )
@@ -366,10 +440,37 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         (),
         length=horizon,
     )
-    reward, vx, vy, abs_vy, abs_yaw_rate, velocity_error, roll_pitch_rate, failed, alive = [
-        np.asarray(jax.device_get(value)) for value in values
-    ]
+    (
+        reward,
+        vx,
+        vy,
+        abs_vy,
+        abs_yaw_rate,
+        velocity_error,
+        roll_pitch_rate,
+        disk_contact,
+        push_applied,
+        post_push,
+        recovery_ready,
+        failed,
+        alive,
+    ) = [np.asarray(jax.device_get(value)) for value in values]
     denominator = max(float(np.sum(alive)), 1.0)
+    post_push_alive = post_push * alive
+    post_push_denominator = max(float(np.sum(post_push_alive)), 1.0)
+    has_push = np.max(push_applied, axis=0) > 0.5
+    recovery_candidates = (recovery_ready > 0.5) & (post_push > 0.5) & (alive > 0.5)
+    first_recovery = np.argmax(recovery_candidates, axis=0)
+    recovered = np.any(recovery_candidates, axis=0)
+    push_index = np.argmax(push_applied, axis=0)
+    recovery_steps = np.where(
+        recovered,
+        np.maximum(first_recovery - push_index, 0),
+        env.config.recovery_window_steps,
+    )
+    mean_recovery_time = (
+        float(np.mean(recovery_steps[has_push])) * env.dt if np.any(has_push) else 0.0
+    )
     mean_velocity_x = float(np.sum(vx * alive) / denominator)
     return {
         "reward_per_step": float(np.sum(reward * alive) / denominator),
@@ -383,6 +484,15 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
             np.sum(velocity_error * alive) / denominator
         ),
         "mean_roll_pitch_rate_rms": float(np.sum(roll_pitch_rate * alive) / denominator),
+        "mean_disk_contacts": float(np.sum(disk_contact * alive) / denominator),
+        "mean_post_push_velocity_error": float(
+            np.sum(velocity_error * post_push_alive) / post_push_denominator
+        ),
+        "mean_post_push_abs_velocity_y": float(
+            np.sum(abs_vy * post_push_alive) / post_push_denominator
+        ),
+        "mean_recovery_time": mean_recovery_time,
+        "push_coverage": float(np.mean(has_push)),
         "failure_rate": float(np.mean(np.max(failed, axis=0))),
         "mean_alive_steps": float(np.mean(np.sum(alive, axis=0))),
     }
@@ -550,6 +660,14 @@ def main(argv=None):
         raise SystemExit("residual penalties must be non-negative")
     if args.teacher_selection_mode == "preserve" and not args.teacher_only:
         raise SystemExit("--teacher-selection-mode preserve requires --teacher-only")
+    if args.teacher_selection_mode == "robust" and not args.teacher_disturbances:
+        raise SystemExit("--teacher-selection-mode robust requires --teacher-disturbances")
+    if not 0.0 <= args.control_delay_probability <= 1.0:
+        raise SystemExit("--control-delay-probability must be in [0, 1]")
+    if not 0 < args.push_step_min <= args.push_step_max < args.episode_length:
+        raise SystemExit("push steps must satisfy 0 < min <= max < episode length")
+    if not 0.0 < args.motor_strength_min <= args.motor_strength_max:
+        raise SystemExit("motor strength range must be positive and ordered")
     if args.smoke:
         args.teacher_steps = min(args.teacher_steps, 20_000)
         args.teacher_envs = min(args.teacher_envs, 64)
@@ -567,6 +685,15 @@ def main(argv=None):
         args.dagger_samples = min(args.dagger_samples, 1_024)
         args.dagger_updates = min(args.dagger_updates, 10)
         args.eval_envs = min(args.eval_envs, 16)
+
+    training_plan = _estimate_brax_timesteps(
+        args.teacher_steps,
+        args.teacher_evals,
+        args.teacher_batch_size,
+        args.teacher_minibatches,
+        args.teacher_unroll_length,
+    )
+    print(f"stage=teacher_step_plan {json.dumps(training_plan, sort_keys=True)}", flush=True)
 
     configure_cloud_runtime(
         xla_triton=args.xla_triton,
@@ -601,6 +728,17 @@ def main(argv=None):
         residual_filter_alpha=args.residual_filter_alpha,
         penalty_residual=args.penalty_residual,
         penalty_residual_rate=args.penalty_residual_rate,
+        disturbance_enabled=args.teacher_disturbances,
+        push_step_min=args.push_step_min,
+        push_step_max=args.push_step_max,
+        push_velocity_x=args.push_velocity_x,
+        push_velocity_y=args.push_velocity_y,
+        motor_strength_min=args.motor_strength_min,
+        motor_strength_max=args.motor_strength_max,
+        control_delay_probability=args.control_delay_probability,
+        disturbance_reset_joint_noise=args.disturbance_reset_joint_noise,
+        disturbance_reset_height_noise=args.disturbance_reset_height_noise,
+        recovery_window_steps=args.recovery_window_steps,
         residual_scale=tuple(
             value * args.residual_scale_multiplier
             for value in ForwardTeacherStudentConfig().residual_scale
@@ -627,33 +765,71 @@ def main(argv=None):
     }
     run_config["resolved_ik_reference"] = asdict(reference_spec)
     run_config["ik_reference_source"] = reference_source
+    run_config["teacher_step_plan"] = training_plan
     (args.out / "run_config.json").write_text(
         json.dumps(run_config, indent=2),
         encoding="utf-8",
     )
 
+    nominal_config = replace(config, disturbance_enabled=False)
     teacher_env = make_forward_teacher_student_env(
         "teacher", config=config, reference=reference, xml_path=args.xml_path, seed=args.seed
     )
     teacher_eval_env = make_forward_teacher_student_env(
         "teacher", config=config, reference=reference, xml_path=args.xml_path, seed=args.seed + 10_000
     )
+    nominal_eval_env = make_forward_teacher_student_env(
+        "teacher",
+        config=nominal_config,
+        reference=reference,
+        xml_path=args.xml_path,
+        seed=args.seed + 10_000,
+    )
     zero_teacher_policy = lambda obs, rng: (
         jp.zeros(obs.shape[:-1] + (config.action_size,)),
         {},
     )
-    baseline_report = _evaluate_teacher(
+    nominal_baseline_report = _evaluate_teacher(
         jax,
-        teacher_eval_env,
+        nominal_eval_env,
         zero_teacher_policy,
         args.seed + 12_000,
         min(args.teacher_eval_envs, 64),
         args.episode_length,
     )
-    (teacher_dir / "ik_baseline_evaluation.json").write_text(
-        json.dumps(baseline_report, indent=2), encoding="utf-8"
+    (teacher_dir / "ik_baseline_nominal_evaluation.json").write_text(
+        json.dumps(nominal_baseline_report, indent=2), encoding="utf-8"
     )
-    print(f"stage=ik_baseline {json.dumps(baseline_report, sort_keys=True)}", flush=True)
+    print(
+        f"stage=ik_baseline_nominal {json.dumps(nominal_baseline_report, sort_keys=True)}",
+        flush=True,
+    )
+    if args.teacher_disturbances:
+        disturbed_baseline_report = _evaluate_teacher(
+            jax,
+            teacher_eval_env,
+            zero_teacher_policy,
+            args.seed + 13_000,
+            min(args.teacher_eval_envs, 64),
+            args.episode_length,
+        )
+        (teacher_dir / "ik_baseline_disturbed_evaluation.json").write_text(
+            json.dumps(disturbed_baseline_report, indent=2), encoding="utf-8"
+        )
+        print(
+            "stage=ik_baseline_disturbed "
+            f"{json.dumps(disturbed_baseline_report, sort_keys=True)}",
+            flush=True,
+        )
+    else:
+        disturbed_baseline_report = nominal_baseline_report
+    (teacher_dir / "ik_baseline_evaluation.json").write_text(
+        json.dumps(disturbed_baseline_report, indent=2), encoding="utf-8"
+    )
+    print(
+        f"stage=ik_baseline {json.dumps(disturbed_baseline_report, sort_keys=True)}",
+        flush=True,
+    )
     checkpoint_kwargs = {}
     ppo_parameters = inspect.signature(ppo.train).parameters
     if "save_checkpoint_path" in ppo_parameters:
@@ -760,44 +936,75 @@ def main(argv=None):
         best_teacher["step"] if best_teacher["params"] is not None else args.teacher_steps
     )
     ppo_teacher_policy = make_teacher_policy(ppo_teacher_params, deterministic=True)
-    ppo_report = _evaluate_teacher(
+    nominal_ppo_report = _evaluate_teacher(
         jax,
-        teacher_eval_env,
+        nominal_eval_env,
         ppo_teacher_policy,
         args.seed + 15_000,
         args.eval_envs,
         args.episode_length,
     )
-    baseline_selection_report = _evaluate_teacher(
+    nominal_baseline_selection_report = _evaluate_teacher(
         jax,
-        teacher_eval_env,
+        nominal_eval_env,
         zero_teacher_policy,
         args.seed + 15_000,
         args.eval_envs,
         args.episode_length,
     )
-    ppo_score = _teacher_selection_score(ppo_report)
-    baseline_score = _teacher_selection_score(baseline_selection_report)
+    if args.teacher_disturbances:
+        disturbed_ppo_report = _evaluate_teacher(
+            jax,
+            teacher_eval_env,
+            ppo_teacher_policy,
+            args.seed + 16_000,
+            args.eval_envs,
+            args.episode_length,
+        )
+        disturbed_baseline_selection_report = _evaluate_teacher(
+            jax,
+            teacher_eval_env,
+            zero_teacher_policy,
+            args.seed + 16_000,
+            args.eval_envs,
+            args.episode_length,
+        )
+    else:
+        disturbed_ppo_report = nominal_ppo_report
+        disturbed_baseline_selection_report = nominal_baseline_selection_report
+
     ppo_preserves_baseline = _ppo_preserves_baseline(
-        ppo_report, baseline_selection_report
+        nominal_ppo_report, nominal_baseline_selection_report
     )
-    select_ppo = _should_select_ppo(
-        args.teacher_selection_mode,
-        ppo_score,
-        baseline_score,
-        ppo_preserves_baseline,
+    ppo_improves_disturbed = _ppo_improves_disturbed_baseline(
+        disturbed_ppo_report,
+        disturbed_baseline_selection_report,
+        args.min_disturbed_score_improvement,
     )
+    if args.teacher_selection_mode == "robust":
+        ppo_score = _disturbed_teacher_score(disturbed_ppo_report)
+        baseline_score = _disturbed_teacher_score(disturbed_baseline_selection_report)
+        select_ppo = ppo_preserves_baseline and ppo_improves_disturbed
+    else:
+        ppo_score = _teacher_selection_score(nominal_ppo_report)
+        baseline_score = _teacher_selection_score(nominal_baseline_selection_report)
+        select_ppo = _should_select_ppo(
+            args.teacher_selection_mode,
+            ppo_score,
+            baseline_score,
+            ppo_preserves_baseline,
+        )
     if not select_ppo:
         selected_source = "ik_baseline"
         selected_step = 0
         teacher_policy = zero_teacher_policy
-        teacher_report = dict(baseline_selection_report)
+        teacher_report = dict(nominal_baseline_selection_report)
         selected_params_path = None
     else:
         selected_source = "ppo"
         selected_step = ppo_selected_step
         teacher_policy = ppo_teacher_policy
-        teacher_report = dict(ppo_report)
+        teacher_report = dict(nominal_ppo_report)
         selected_params_path = teacher_dir / "params"
         model_io.save_params(selected_params_path, ppo_teacher_params)
 
@@ -808,25 +1015,35 @@ def main(argv=None):
         "ppo_step": ppo_selected_step,
         "ppo_score": ppo_score,
         "ppo_preserves_baseline": ppo_preserves_baseline,
+        "ppo_improves_disturbed_baseline": ppo_improves_disturbed,
         "selection_mode": args.teacher_selection_mode,
-        "ppo_report": ppo_report,
+        "ppo_report": nominal_ppo_report,
+        "ppo_nominal_report": nominal_ppo_report,
+        "ppo_disturbed_report": disturbed_ppo_report,
         "ik_baseline_score": baseline_score,
-        "ik_baseline_report": baseline_selection_report,
+        "ik_baseline_report": nominal_baseline_selection_report,
+        "ik_nominal_baseline_report": nominal_baseline_selection_report,
+        "ik_disturbed_baseline_report": disturbed_baseline_selection_report,
     }
     (teacher_dir / "selection.json").write_text(
         json.dumps(selection, indent=2), encoding="utf-8"
     )
     (teacher_dir / "ppo_evaluation.json").write_text(
-        json.dumps(ppo_report, indent=2), encoding="utf-8"
+        json.dumps(nominal_ppo_report, indent=2), encoding="utf-8"
+    )
+    (teacher_dir / "ppo_disturbed_evaluation.json").write_text(
+        json.dumps(disturbed_ppo_report, indent=2), encoding="utf-8"
     )
     print(
         f"stage=teacher_selection source={selected_source} selected_step={selected_step:,} "
         f"ppo_score={ppo_score:.5f} ik_baseline_score={baseline_score:.5f} "
+        f"nominal_preserved={ppo_preserves_baseline} "
+        f"disturbed_improved={ppo_improves_disturbed} "
         f"saved={selected_params_path}",
         flush=True,
     )
 
-    teacher_accepted = (
+    absolute_teacher_accepted = (
         teacher_report["mean_velocity_x"] >= args.min_accepted_teacher_vx
         and teacher_report["failure_rate"] <= args.max_accepted_teacher_failure_rate
         and teacher_report["mean_velocity_error"]
@@ -838,13 +1055,34 @@ def main(argv=None):
         and teacher_report["mean_abs_yaw_rate"]
         <= args.max_accepted_teacher_yaw_rate
     )
-    if selected_source != "ppo" and not args.allow_ik_baseline_teacher:
-        teacher_accepted = False
+    teacher_accepted = _teacher_gate_acceptance(
+        args.teacher_selection_mode,
+        selected_source,
+        absolute_teacher_accepted,
+        ppo_preserves_baseline,
+        ppo_improves_disturbed,
+        args.allow_ik_baseline_teacher,
+    )
+
+    if not teacher_accepted:
         if args.teacher_selection_mode == "preserve":
             teacher_report["rejection_reason"] = "ppo_teacher_did_not_preserve_ik_baseline"
-        else:
+        elif args.teacher_selection_mode == "robust":
+            teacher_report["rejection_reason"] = "ppo_teacher_failed_nominal_or_disturbed_gate"
+        elif selected_source != "ppo" and not args.allow_ik_baseline_teacher:
             teacher_report["rejection_reason"] = "ppo_teacher_did_not_outperform_ik_baseline"
     teacher_report["accepted"] = teacher_accepted
+    teacher_report["absolute_thresholds_passed"] = absolute_teacher_accepted
+    teacher_report["ppo_preserves_nominal_baseline"] = ppo_preserves_baseline
+    teacher_report["ppo_improves_disturbed_baseline"] = ppo_improves_disturbed
+    teacher_report["nominal_evaluation"] = (
+        nominal_ppo_report if selected_source == "ppo" else nominal_baseline_selection_report
+    )
+    teacher_report["disturbed_evaluation"] = (
+        disturbed_ppo_report
+        if selected_source == "ppo"
+        else disturbed_baseline_selection_report
+    )
     teacher_report["minimum_velocity_x"] = args.min_accepted_teacher_vx
     teacher_report["maximum_failure_rate"] = args.max_accepted_teacher_failure_rate
     teacher_report["maximum_velocity_error"] = args.max_accepted_teacher_velocity_error

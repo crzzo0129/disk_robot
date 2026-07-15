@@ -85,6 +85,11 @@ def make_forward_teacher_student_env(
             self.torso_body_id = self.contract.torso_body_id
             self.torso_geom_id = self.contract.torso_geom_id
             self.floor_geom_id = self.contract.floor_geom_id
+            root_joint_id = int(self.model.body_jntadr[self.torso_body_id])
+            if self.model.jnt_type[root_joint_id] != mujoco.mjtJoint.mjJNT_FREE:
+                raise ValueError("Teacher disturbances require a free root joint")
+            root_dof = int(self.model.jnt_dofadr[root_joint_id])
+            self.root_linear_dof_indices = jp.arange(root_dof, root_dof + 3, dtype=jp.int32)
 
         @property
         def observation_size(self):
@@ -102,24 +107,44 @@ def make_forward_teacher_student_env(
 
         def reset(self, rng):
             rng = jax.random.fold_in(rng, self.seed)
-            phase_key, joint_key, height_key, next_rng = jax.random.split(rng, 4)
+            (
+                phase_key,
+                joint_key,
+                height_key,
+                push_step_key,
+                push_angle_key,
+                push_magnitude_key,
+                motor_key,
+                delay_key,
+                next_rng,
+            ) = jax.random.split(rng, 9)
             if self.role == "student":
                 phase = jp.array(0.0)
                 initial_target = self.stand_q
             else:
                 phase = jax.random.uniform(phase_key)
                 initial_target = self.stand_q
+            joint_noise_limit = (
+                self.config.disturbance_reset_joint_noise
+                if self.config.disturbance_enabled
+                else self.config.reset_joint_noise
+            )
             joint_noise = jax.random.uniform(
                 joint_key,
                 shape=(self.config.action_size,),
-                minval=-self.config.reset_joint_noise,
-                maxval=self.config.reset_joint_noise,
+                minval=-joint_noise_limit,
+                maxval=joint_noise_limit,
             )
             joint_q = jp.clip(initial_target + joint_noise, self.ctrl_low, self.ctrl_high)
+            height_noise_limit = (
+                self.config.disturbance_reset_height_noise
+                if self.config.disturbance_enabled
+                else self.config.reset_height_noise
+            )
             height_noise = jax.random.uniform(
                 height_key,
-                minval=-self.config.reset_height_noise,
-                maxval=self.config.reset_height_noise,
+                minval=-height_noise_limit,
+                maxval=height_noise_limit,
             )
             qpos = self.base_data.qpos.at[self.qpos_indices].set(joint_q).at[2].add(height_noise)
             qvel = jp.zeros_like(self.base_data.qvel)
@@ -131,6 +156,38 @@ def make_forward_teacher_student_env(
 
             previous_residual = jp.zeros(self.config.action_size)
             previous_student_action = self._target_to_student_action(initial_target)
+            if self.config.disturbance_enabled:
+                push_step = jax.random.randint(
+                    push_step_key,
+                    (),
+                    self.config.push_step_min,
+                    self.config.push_step_max + 1,
+                )
+                push_angle = jax.random.uniform(push_angle_key, (), minval=-jp.pi, maxval=jp.pi)
+                push_magnitude = jax.random.uniform(
+                    push_magnitude_key, (), minval=0.7, maxval=1.0
+                )
+                push_velocity = push_magnitude * jp.stack(
+                    (
+                        self.config.push_velocity_x * jp.cos(push_angle),
+                        self.config.push_velocity_y * jp.sin(push_angle),
+                    )
+                )
+                motor_strength = jax.random.uniform(
+                    motor_key,
+                    (),
+                    minval=self.config.motor_strength_min,
+                    maxval=self.config.motor_strength_max,
+                )
+                control_delay = jax.random.bernoulli(
+                    delay_key, self.config.control_delay_probability
+                ).astype(jp.float32)
+            else:
+                push_step = jp.array(self.config.max_episode_steps + 1, dtype=jp.int32)
+                push_velocity = jp.zeros(2)
+                motor_strength = jp.array(1.0)
+                control_delay = jp.array(0.0)
+            last_push = jp.zeros(2)
             student_history = jp.zeros(self.config.student_observation_size)
             student_obs = self._update_student_history(
                 student_history,
@@ -144,7 +201,13 @@ def make_forward_teacher_student_env(
                 "student_obs": student_obs,
                 "last_foot_pos": data.site_xpos[self.foot_site_ids],
                 "target_ctrl": initial_target,
+                "previous_target_ctrl": initial_target,
                 "student_action": previous_student_action,
+                "push_step": push_step,
+                "push_velocity": push_velocity,
+                "last_push": last_push,
+                "motor_strength": motor_strength,
+                "control_delay": control_delay,
             }
             if self.role != "student":
                 actual_contacts = self._foot_contacts(data)
@@ -156,6 +219,9 @@ def make_forward_teacher_student_env(
                     actual_contacts,
                     previous_residual,
                     jp.array(0.0),
+                    last_push,
+                    motor_strength,
+                    control_delay,
                 )
                 info.update(
                     {
@@ -195,9 +261,25 @@ def make_forward_teacher_student_env(
                     )
             target_ctrl = jp.clip(target_ctrl, self.ctrl_low, self.ctrl_high)
 
+            joint_position = state.pipeline_state.qpos[self.qpos_indices]
+            strength_target = joint_position + state.info["motor_strength"] * (
+                target_ctrl - joint_position
+            )
+            delayed_target = jp.where(
+                state.info["control_delay"] > 0.5,
+                state.info["previous_target_ctrl"],
+                strength_target,
+            )
+            applied_target = jp.clip(delayed_target, self.ctrl_low, self.ctrl_high)
+            push_applied = state.info["step_count"] == state.info["push_step"]
+            applied_push = jp.where(push_applied, state.info["push_velocity"], jp.zeros(2))
+
             old_pos = state.pipeline_state.xpos[self.torso_body_id]
             data = state.pipeline_state.replace(
-                ctrl=state.pipeline_state.ctrl.at[self.actuator_ids].set(target_ctrl)
+                qvel=state.pipeline_state.qvel.at[self.root_linear_dof_indices[:2]].add(
+                    applied_push
+                ),
+                ctrl=state.pipeline_state.ctrl.at[self.actuator_ids].set(applied_target),
             )
 
             def physics_step(carry, _):
@@ -244,6 +326,11 @@ def make_forward_teacher_student_env(
             timeout_bool = step_count >= self.config.max_episode_steps
             done = jp.maximum(state.done, (failed_bool | timeout_bool).astype(jp.float32))
             failed = failed_bool.astype(jp.float32)
+            steps_since_push = step_count - state.info["push_step"]
+            post_push = (
+                (steps_since_push >= 0)
+                & (steps_since_push < self.config.recovery_window_steps)
+            ).astype(jp.float32)
 
             forward_velocity = world_velocity[0]
             velocity_error = forward_velocity - self.config.command_vx
@@ -284,8 +371,10 @@ def make_forward_teacher_student_env(
                 "student_history": student_history,
                 "student_obs": student_history,
                 "last_foot_pos": foot_pos,
-                "target_ctrl": target_ctrl,
+                "target_ctrl": applied_target,
+                "previous_target_ctrl": strength_target,
                 "student_action": student_action,
+                "last_push": applied_push,
             }
             if self.role != "student":
                 teacher_obs = self._teacher_obs(
@@ -296,6 +385,9 @@ def make_forward_teacher_student_env(
                     actual_contacts,
                     residual_action,
                     next_gait_blend,
+                    applied_push,
+                    state.info["motor_strength"],
+                    state.info["control_delay"],
                 )
                 info.update(
                     {
@@ -325,6 +417,13 @@ def make_forward_teacher_student_env(
                 "contact_mismatch": contact_mismatch,
                 "residual_rms": jp.sqrt(jp.mean(jp.square(residual_action))),
                 "student_action_rms": jp.sqrt(jp.mean(jp.square(student_action))),
+                "push_applied": push_applied.astype(jp.float32),
+                "post_push": post_push,
+                "recovery_ready": (
+                    (jp.abs(velocity_error) <= 0.10)
+                    & (jp.abs(world_velocity[1]) <= 0.10)
+                    & (upright >= 0.80)
+                ).astype(jp.float32),
                 "failed": failed,
                 "timeout": timeout_bool.astype(jp.float32),
             }
@@ -394,7 +493,12 @@ def make_forward_teacher_student_env(
             actual_contacts,
             previous_residual,
             gait_blend=0.0,
+            last_push=None,
+            motor_strength=1.0,
+            control_delay=0.0,
         ):
+            if last_push is None:
+                last_push = jp.zeros(2)
             phase_angle = 2.0 * jp.pi * phase
             privileged = jp.concatenate(
                 (
@@ -404,6 +508,15 @@ def make_forward_teacher_student_env(
                     actual_contacts,
                     data.qpos[self.qpos_indices] - ik_target,
                     previous_residual,
+                    last_push
+                    / jp.asarray(
+                        (
+                            max(self.config.push_velocity_x, 1e-6),
+                            max(self.config.push_velocity_y, 1e-6),
+                        )
+                    ),
+                    jp.atleast_1d(motor_strength - 1.0),
+                    jp.atleast_1d(control_delay),
                 )
             )
             return jp.concatenate((student_obs, privileged))
@@ -451,6 +564,9 @@ def make_forward_teacher_student_env(
                 "contact_mismatch",
                 "residual_rms",
                 "student_action_rms",
+                "push_applied",
+                "post_push",
+                "recovery_ready",
                 "failed",
                 "timeout",
             )

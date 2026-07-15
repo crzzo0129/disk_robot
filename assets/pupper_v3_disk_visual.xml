@@ -22,6 +22,18 @@
                        0.251 0.0 -0.88
                       0.0  0.0 -1.8
                       0.0  0.0  1.8"/>
+        <!-- Compact rolling pose: the complete COM is close to the disk axis.
+             Keep this separate from folded, which remains the push preparation pose. -->
+        <key name="rolling_folded"
+                qpos="0 0 0.24 1 0 0 0
+                    -2.1452 0.0 -1.0750
+                     2.1452 0.0  1.0750
+                    -2.2855 0.0 -2.2500
+                     2.2855 0.0  2.2500"
+                ctrl="-2.1452 0.0 -1.0750
+                       2.1452 0.0  1.0750
+                      -2.2855 0.0 -2.2500
+                       2.2855 0.0  2.2500"/>
     </keyframe>
     <asset>
         <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="512" height="512" />

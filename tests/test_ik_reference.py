@@ -26,8 +26,8 @@ def test_teacher_student_observation_contract_is_explicit():
 
     assert config.student_frame_size == 48
     assert config.student_observation_size == 192
-    assert config.privileged_size == 35
-    assert config.teacher_observation_size == 227
+    assert config.privileged_size == 39
+    assert config.teacher_observation_size == 231
     assert len(config.student_action_scale) == 12
     assert len(config.residual_scale) == 12
 

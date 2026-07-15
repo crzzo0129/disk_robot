@@ -31,6 +31,9 @@ def test_pipeline_smoke_and_stand_defaults_are_explicit():
     assert args.penalty_residual_rate == 0.05
     assert args.teacher_zero_policy_init
     assert args.teacher_selection_mode == "improve"
+    assert not args.teacher_disturbances
+    assert args.push_velocity_x == 0.20
+    assert args.push_velocity_y == 0.15
     assert not args.allow_ik_baseline_teacher
     assert not args.teacher_only
 
@@ -128,6 +131,70 @@ def test_t1b_preserve_mode_cannot_start_student_distillation():
         main(["--teacher-selection-mode", "preserve"])
 
 
+def test_preserve_acceptance_uses_relative_gate_not_absolute_lateral_cap():
+    from scripts.train_forward_teacher_student import _teacher_gate_acceptance
+
+    assert _teacher_gate_acceptance("preserve", "ppo", False, True, False)
+    assert not _teacher_gate_acceptance("preserve", "ppo", True, False, False)
+    assert not _teacher_gate_acceptance("preserve", "ik_baseline", True, True, False)
+
+
+def test_brax_step_plan_reports_the_observed_rounding_quantum():
+    from scripts.train_forward_teacher_student import _estimate_brax_timesteps
+
+    inflated = _estimate_brax_timesteps(200_000, 6, 256, 32, 20)
+    fitted = _estimate_brax_timesteps(200_000, 6, 256, 8, 20)
+
+    assert inflated["step_quantum"] == 163_840
+    assert inflated["estimated_effective_steps"] == 819_200
+    assert fitted["estimated_effective_steps"] == 204_800
+
+
+def test_t2_robust_gate_requires_nominal_preservation_and_disturbed_gain():
+    from scripts.train_forward_teacher_student import (
+        _ppo_improves_disturbed_baseline,
+        _teacher_gate_acceptance,
+    )
+
+    baseline = {
+        "reward_per_step": 1.0,
+        "failure_rate": 0.20,
+        "mean_velocity_error": 0.02,
+        "mean_roll_pitch_rate_rms": 0.30,
+        "mean_abs_velocity_y": 0.04,
+        "mean_abs_yaw_rate": 0.20,
+        "mean_post_push_velocity_error": 0.20,
+        "mean_recovery_time": 1.0,
+        "mean_disk_contacts": 0.10,
+        "mean_forward_distance": 0.50,
+    }
+    ppo = {
+        **baseline,
+        "reward_per_step": 1.1,
+        "failure_rate": 0.10,
+        "mean_post_push_velocity_error": 0.15,
+        "mean_recovery_time": 0.8,
+        "mean_disk_contacts": 0.05,
+        "mean_forward_distance": 0.55,
+    }
+
+    assert _ppo_improves_disturbed_baseline(ppo, baseline)
+    assert _teacher_gate_acceptance("robust", "ppo", False, True, True)
+    assert not _teacher_gate_acceptance("robust", "ppo", True, False, True)
+
+    ppo["mean_forward_distance"] = 0.47
+    assert not _ppo_improves_disturbed_baseline(ppo, baseline)
+
+
+def test_t2_robust_mode_requires_disturbances():
+    import pytest
+
+    from scripts.train_forward_teacher_student import main
+
+    with pytest.raises(SystemExit, match="robust requires --teacher-disturbances"):
+        main(["--teacher-selection-mode", "robust", "--teacher-only"])
+
+
 def test_pipeline_manual_ik_mode_keeps_explicit_parameters():
     from scripts.train_forward_teacher_student import _resolve_reference_spec, parse_args
 
@@ -169,6 +236,12 @@ def test_teacher_env_has_privileged_residual_and_student_modes():
     assert '"body_velocity_x": body_velocity[0]' in source
     assert 'if self.role == "student"' in source
     assert "self._blended_ik_target" in source
+    assert 'state.info["push_velocity"]' in source
+    assert 'state.info["motor_strength"]' in source
+    assert 'state.info["control_delay"]' in source
+    assert '"mean_post_push_velocity_error"' in open(
+        "scripts/train_forward_teacher_student.py", encoding="utf-8"
+    ).read()
 
 
 def test_pipeline_produces_student_policy_and_evaluation_contract():

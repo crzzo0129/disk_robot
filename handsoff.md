@@ -217,65 +217,73 @@ Interpretation:
 Do not distill this Teacher into a Student. Less-informed supervised Student training cannot
 invent recovery behavior that the Teacher did not demonstrate.
 
-## 8. Next Task: Implement T1b
+## 8. T1b Result: Passed
 
-The previous user message was `do it`, but the turn was interrupted before T1b implementation
-started. T1b is therefore NOT implemented yet.
+T1b was implemented with zero deterministic actor output initialization, residual low-pass
+filtering, configurable residual penalties, and `--teacher-selection-mode preserve`.
 
-T1b is a short sanity gate, not a final Teacher:
-
-```text
-nominal state: residual approximately zero
-joint target:  approximately the original IK target
-```
-
-Implement the following:
-
-1. Start the PPO actor at or very near zero deterministic residual. Inspect the installed
-   Brax `0.10+` policy-network API in the cloud before relying on initializer arguments;
-   `requirements-mjx.txt` does not pin an exact Brax version.
-2. Low-pass filter Teacher residual commands. A proposed update is
-   `filtered = previous + alpha * (command - previous)` with configurable `alpha` around
-   `0.1-0.2`. Use the filtered residual consistently in environment stepping, Teacher
-   observation/history, reward penalties, and DAgger label conversion.
-3. Make zero-residual regularization configurable. Start around `penalty_residual=0.2`
-   instead of the current `0.02`; keep or slightly strengthen residual-rate penalty.
-4. Add a nominal selection mode such as `--teacher-selection-mode preserve`. It may select
-   PPO when it remains within baseline tolerances even if its scalar score is microscopically
-   lower. This mode must require `--teacher-only`; it must never unlock Student distillation.
-5. Use no entropy or very low entropy, learning rate around `1e-5`, one PPO update per batch,
-   residual multiplier `0.25`, and only `100k-300k` steps.
-6. T1b passes only if PPO remains close to baseline:
+Cloud result from `mjx_runs/teacher_t1b_seed0`:
 
 ```text
-mean_velocity_x          >= baseline - 0.01 m/s
-roll_pitch_rate_rms      <= baseline + 0.10 rad/s
-failure_rate             <= baseline + 0.02
-mean_abs_velocity_y      <= baseline + 0.01 m/s
-mean_abs_yaw_rate        <= baseline + 0.05 rad/s
+                         IK baseline       selected PPO
+mean_velocity_x          0.083693          0.083194
+failure_rate             0                 0
+roll/pitch rate RMS      0.220249          0.216421
+mean_abs_velocity_y      0.032373          0.031815
+mean_abs_yaw_rate        0.157255          0.151094
+instantaneous error      0.079449          0.077681
+reward_per_step          1.542272          1.570872
 ```
 
-T1b does not prove a useful privileged Teacher. It only proves PPO can avoid destroying IK.
+PPO preserved forward speed and improved every reported stability metric. T1b therefore
+passed. The old absolute lateral cap rejected the run only because the cap was `0.03 m/s`
+while IK itself measured `0.03237 m/s`. Preserve-mode acceptance now uses the relative T1b
+gate and reports the absolute threshold result separately.
 
-## 9. After T1b: T2 Privileged Disturbance Teacher
+The run also exposed Brax timestep rounding. With batch size 256, 32 minibatches, unroll 20,
+and six evaluations, a requested 200k run executed 819,200 steps. The training script now
+prints `stage=teacher_step_plan`. Using eight minibatches produces approximately 204,800
+steps for the same request.
 
-Once T1b preserves IK, add disturbances that create a reason for nonzero residuals:
+T1b still does not prove a useful privileged Teacher. It proves PPO can avoid destroying IK.
 
-- random forward/lateral pushes;
-- motor-strength variation;
-- control delay;
-- friction variation;
-- small mass/COM variation;
-- larger reset pose and joint perturbations.
+## 9. Current Task: T2a Privileged Disturbance Teacher
 
-Evaluate zero-residual IK and PPO on identical nominal and disturbed seeds. A valid Teacher:
+T2a is now implemented locally with:
 
-1. does not materially regress nominal IK performance; and
-2. significantly improves disturbed failure rate, recovery time, post-push velocity error,
-   disk contact rate, and forward displacement.
+- one randomized forward/lateral root-velocity push per episode;
+- episode-level approximate motor-strength variation;
+- randomized one-control-step command delay;
+- larger joint and height reset perturbations;
+- four additional privileged Teacher observations: last push XY, motor-strength deviation,
+  and delay state. Student observations remain unchanged;
+- post-push velocity error, recovery time, disk contact, push coverage, and displacement
+  metrics;
+- paired nominal and disturbed IK/PPO evaluation using identical seeds;
+- `--teacher-selection-mode robust`, which requires both nominal preservation and disturbed
+  improvement before selecting PPO.
 
-Only after this dual gate passes should BC and DAgger run. T2 is where privileged phase,
-contact, IK tracking error, and disturbance information can become useful.
+Friction, mass, and COM randomization are intentionally deferred to T2b because they require
+per-environment MJX model randomization. Do not add them until T2a push recovery is calibrated.
+
+Run the cloud smoke first:
+
+```bash
+python -m scripts.train_forward_teacher_student --smoke --teacher-only --teacher-selection-mode robust --teacher-disturbances --teacher-learning-rate 1e-5 --teacher-entropy-cost 0 --teacher-updates-per-batch 1 --residual-scale-multiplier 0.25 --out mjx_runs/teacher_t2a_smoke_seed0
+```
+
+The first decision is whether `stage=ik_baseline_disturbed` is meaningfully worse than the
+nominal IK baseline. If pushes are too weak to expose a recovery deficit, increase push
+velocity before running a long Teacher experiment. Do not interpret a robust-gate failure in
+a 20k smoke as a learning result; smoke primarily checks compilation and metric semantics.
+
+An initial one-million-step experiment, after smoke validation, can use:
+
+```bash
+python -m scripts.train_forward_teacher_student --teacher-only --teacher-selection-mode robust --teacher-disturbances --teacher-steps 1000000 --teacher-evals 6 --teacher-minibatches 8 --teacher-learning-rate 2e-5 --teacher-entropy-cost 1e-4 --teacher-updates-per-batch 1 --residual-scale-multiplier 0.25 --residual-filter-alpha 0.15 --penalty-residual 0.1 --penalty-residual-rate 0.05 --strict-acceptance --out mjx_runs/teacher_t2a_seed0
+```
+
+Only after the nominal/disturbed dual gate passes should BC and DAgger run.
 
 ## 10. Commands And Workflow Notes
 
@@ -287,18 +295,9 @@ python -m pytest -q
 
 The local bundled Python has MuJoCo but not JAX/Brax, so full MJX smoke must run in `mjx312`.
 
-Current short Teacher experiment command, before T1b changes:
-
-```bash
-python -m scripts.train_forward_teacher_student --teacher-only --teacher-steps 1500000 --teacher-evals 11 --teacher-learning-rate 3e-5 --teacher-entropy-cost 1e-4 --teacher-updates-per-batch 2 --residual-scale-multiplier 0.25 --strict-acceptance --out mjx_runs/teacher_r025_seed0
-```
-
-Do not rerun this unchanged; it already failed and T1b must be implemented first.
-
 Use single-line Windows and Linux commands. The user explicitly does not want PowerShell
 backtick continuation syntax. The cloud cannot access the internet, so dependencies and code
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-working-tree changes are the lateral/yaw metrics described above.
-
+local tests after T2a are `83 passed`.

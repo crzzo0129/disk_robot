@@ -10,7 +10,8 @@ XML_PATH = REPO_ROOT / "assets" / "pupper_v3_disk_visual.xml"
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--keyframe", choices=["home", "stand", "folded"], default="folded")
+    parser.add_argument("--xml", type=Path, default=XML_PATH)
+    parser.add_argument("--keyframe", default="folded")
     parser.add_argument(
         "--passive",
         action="store_true",
@@ -25,7 +26,8 @@ def main(argv=None):
     import mujoco
     from mujoco import viewer
 
-    model = mujoco.MjModel.from_xml_path(str(XML_PATH))
+    xml_path = args.xml.resolve()
+    model = mujoco.MjModel.from_xml_path(str(xml_path))
     data = mujoco.MjData(model)
     key_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, args.keyframe)
     if key_id < 0:
@@ -35,7 +37,7 @@ def main(argv=None):
     mujoco.mj_forward(model, data)
     torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
 
-    print(f"model={XML_PATH} keyframe={args.keyframe}")
+    print(f"model={xml_path} keyframe={args.keyframe}")
     if not args.passive:
         viewer.launch(model, data)
         return

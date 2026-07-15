@@ -96,6 +96,55 @@ def test_tangential_push_is_symmetric_and_keeps_front_legs_folded():
     assert target[9:12] == [1.4, 0.0, -0.05]
 
 
+def test_balanced_fold_wraps_rear_legs_forward():
+    from scripts.simulate_extreme_disk_pose import balanced_folded_target, tangential_rear_push_target
+
+    folded = [-0.251, 0.0, 0.88, 0.251, 0.0, -0.88, -1.6, 0.0, 0.88, 1.6, 0.0, -0.88]
+    balanced = balanced_folded_target(folded)
+    push = tangential_rear_push_target(balanced)
+
+    assert balanced[:6] == folded[:6]
+    assert balanced[6:] == [-3.0, 0.0, 2.65, 3.0, 0.0, -2.65]
+    assert push[6:] == [-2.9, 0.0, 1.94, 2.9, 0.0, -1.94]
+
+
+def test_ground_push_plants_then_sweeps_rear_feet():
+    from scripts.simulate_extreme_disk_pose import ground_rear_push_targets
+
+    folded = [-0.251, 0.0, 0.88, 0.251, 0.0, -0.88, -1.6, 0.0, 0.88, 1.6, 0.0, -0.88]
+    plant, push = ground_rear_push_targets(folded)
+
+    assert plant[:6] == folded[:6]
+    assert plant[6:] == [-0.62, 0.0, 0.48, 0.62, 0.0, -0.48]
+    assert push[6:] == [-0.76, 0.0, -0.3, 0.76, 0.0, 0.3]
+
+
+def test_axial_rolling_pose_is_front_rear_and_left_right_symmetric():
+    from scripts.simulate_extreme_disk_pose import axial_rolling_target
+
+    folded = [-0.251, 0.0, 0.88, 0.251, 0.0, -0.88, -1.6, 0.0, 0.88, 1.6, 0.0, -0.88]
+    target = axial_rolling_target(folded)
+
+    assert target[0:3] == [-2.1452, 0.0, -1.075]
+    assert target[3:6] == [2.1452, 0.0, 1.075]
+    assert target[6:9] == [-2.2855, 0.0, -2.25]
+    assert target[9:12] == [2.2855, 0.0, 2.25]
+
+
+def test_pupper_xml_exposes_axial_rolling_keyframe():
+    from scripts import simulate_extreme_disk_pose
+
+    root = ET.parse(simulate_extreme_disk_pose.PUPPER_XML_PATH).getroot()
+    rolling = root.find("./keyframe/key[@name='rolling_folded']")
+    ctrl = [float(value) for value in rolling.attrib["ctrl"].split()]
+
+    assert ctrl == simulate_extreme_disk_pose.axial_rolling_target([0.0] * 12)
+
+    folded = root.find("./keyframe/key[@name='folded']")
+    folded_ctrl = [float(value) for value in folded.attrib["ctrl"].split()]
+    assert max(abs(target - start) for start, target in zip(folded_ctrl, ctrl)) < 3.141593
+
+
 def test_simultaneous_folding_moves_front_and_rear_together():
     from scripts.simulate_extreme_disk_pose import folding_target
 
@@ -121,6 +170,18 @@ def test_rear_push_roll_target_folds_before_pushing():
     assert target(1.5) == ("push_hold", 0.0)
     assert target(1.8)[0] == "push_to_folded"
     assert target(2.1) == ("rolling", 1.0)
+
+
+def test_repeated_push_target_has_prepare_push_hold_retract_stages():
+    from scripts.simulate_extreme_disk_pose import repeated_push_target
+
+    target = lambda elapsed: repeated_push_target(elapsed, 0.2, 0.3, 0.1, 0.15)
+
+    assert target(0.1) == ("repeat_prepare", 0.5)
+    assert target(0.3)[0] == "repeat_push"
+    assert target(0.55) == ("repeat_hold", 0.0)
+    assert target(0.65)[0] == "repeat_retract"
+    assert target(0.8) == ("repeat_done", 1.0)
 
 
 def test_zero_transition_time_keeps_instant_switch_available():
@@ -162,6 +223,7 @@ def test_rear_push_roll_preset_selects_motion_and_runtime_strength():
     assert args.stand_hold_time == 0.04
     assert args.stand_to_folded_time == 0.14
     assert args.push_style == "tangent"
+    assert args.rolling_pose == "axial"
     assert args.push_scale == 1.0
     assert args.push_trigger_speed == 0.1
     assert args.push_trigger_timeout == 2.0

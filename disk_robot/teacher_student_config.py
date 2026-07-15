@@ -30,6 +30,18 @@ class ForwardTeacherStudentConfig:
     residual_scale: tuple[float, ...] = RESIDUAL_SCALE
     residual_filter_alpha: float = 0.15
 
+    disturbance_enabled: bool = False
+    push_step_min: int = 100
+    push_step_max: int = 350
+    push_velocity_x: float = 0.20
+    push_velocity_y: float = 0.15
+    motor_strength_min: float = 0.85
+    motor_strength_max: float = 1.15
+    control_delay_probability: float = 0.50
+    disturbance_reset_joint_noise: float = 0.030
+    disturbance_reset_height_noise: float = 0.005
+    recovery_window_steps: int = 100
+
     actuator_kp: float = 10.0
     actuator_kd: float = 0.4
     torque_limit: float = 3.0
@@ -65,8 +77,8 @@ class ForwardTeacherStudentConfig:
 
     @property
     def privileged_size(self) -> int:
-        # phase, startup blend, desired/actual contacts, IK tracking error, previous residual
-        return 2 + 1 + 4 + 4 + 12 + 12
+        # phase, blend, contacts, IK error, residual, push, motor strength, control delay
+        return 2 + 1 + 4 + 4 + 12 + 12 + 2 + 1 + 1
 
     @property
     def teacher_observation_size(self) -> int:
