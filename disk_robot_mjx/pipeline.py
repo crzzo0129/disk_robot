@@ -58,11 +58,13 @@ def configure_cloud_runtime(xla_triton=True, mujoco_gl="auto", matmul_precision=
     if matmul_precision:
         os.environ.setdefault("JAX_DEFAULT_MATMUL_PRECISION", matmul_precision)
     if verbose:
+        configured_flags = os.environ.get("XLA_FLAGS", "")
         print(
             "stage=runtime_config "
             f"mujoco_gl={os.environ.get('MUJOCO_GL', '')} "
             f"matmul_precision={os.environ.get('JAX_DEFAULT_MATMUL_PRECISION', '')} "
-            f"xla_flags={os.environ.get('XLA_FLAGS', '')}",
+            f"triton={'on' if '--xla_gpu_triton_gemm_any=True' in configured_flags else 'off'} "
+            f"autotune_cache={'loaded' if '--xla_gpu_load_autotune_results_from=' in configured_flags else 'new'}",
             flush=True,
         )
 

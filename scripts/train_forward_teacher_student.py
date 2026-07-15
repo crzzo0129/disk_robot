@@ -225,8 +225,65 @@ def _teacher_eval_summary(metrics, command_vx):
 
 def _teacher_progress(step, metrics, command_vx):
     summary = _teacher_eval_summary(metrics, command_vx)
-    values = " ".join(f"{name}={value:.5f}" for name, value in summary.items())
-    print(f"stage=teacher_eval step={int(step):,} {values}", flush=True)
+    print(
+        f"stage=teacher_eval step={int(step):,} "
+        f"reward={summary.get('reward_per_step', float('nan')):.4f} "
+        f"vx={summary.get('mean_velocity_x', float('nan')):.4f} "
+        f"vx_error={summary.get('mean_velocity_error', float('nan')):.4f} "
+        f"failure={summary.get('failure_rate', float('nan')):.3f} "
+        f"roll_pitch={summary.get('mean_roll_pitch_rate_rms', float('nan')):.4f} "
+        f"abs_vy={summary.get('mean_abs_velocity_y', float('nan')):.4f} "
+        f"abs_yaw={summary.get('mean_abs_yaw_rate', float('nan')):.4f}",
+        flush=True,
+    )
+
+
+def _print_evaluation_summary(stage, report, mode=None):
+    prefix = f"stage={stage}"
+    if mode is not None:
+        prefix += f" mode={mode}"
+    values = [
+        f"reward={report.get('reward_per_step', float('nan')):.4f}",
+        f"vx={report.get('mean_velocity_x', float('nan')):.4f}",
+        f"distance={report.get('mean_forward_distance', float('nan')):.4f}",
+        f"failure={report.get('failure_rate', float('nan')):.3f}",
+        f"roll_pitch={report.get('mean_roll_pitch_rate_rms', float('nan')):.4f}",
+        f"abs_vy={report.get('mean_abs_velocity_y', float('nan')):.4f}",
+        f"abs_yaw={report.get('mean_abs_yaw_rate', float('nan')):.4f}",
+        f"disk={report.get('mean_disk_contacts', float('nan')):.4f}",
+    ]
+    if mode == "disturbed":
+        values.extend(
+            (
+                f"post_error={report.get('mean_post_push_velocity_error', float('nan')):.4f}",
+                f"recovery_s={report.get('mean_recovery_time', float('nan')):.3f}",
+                f"push_coverage={report.get('push_coverage', float('nan')):.2f}",
+            )
+        )
+    print(f"{prefix} {' '.join(values)}", flush=True)
+
+
+def _print_teacher_comparison(mode, ppo_report, baseline_report, score_gain=None):
+    values = []
+    if score_gain is not None:
+        values.append(f"score_gain={score_gain:+.4f}")
+    values.extend(
+        (
+            f"delta_vx={ppo_report['mean_velocity_x'] - baseline_report['mean_velocity_x']:+.4f}",
+            f"delta_failure={ppo_report['failure_rate'] - baseline_report['failure_rate']:+.3f}",
+            f"delta_roll_pitch={ppo_report['mean_roll_pitch_rate_rms'] - baseline_report['mean_roll_pitch_rate_rms']:+.4f}",
+        )
+    )
+    if mode == "disturbed":
+        values.extend(
+            (
+                f"delta_post_error={ppo_report['mean_post_push_velocity_error'] - baseline_report['mean_post_push_velocity_error']:+.4f}",
+                f"delta_recovery_s={ppo_report['mean_recovery_time'] - baseline_report['mean_recovery_time']:+.3f}",
+                f"delta_distance={ppo_report['mean_forward_distance'] - baseline_report['mean_forward_distance']:+.4f}",
+                f"delta_disk={ppo_report['mean_disk_contacts'] - baseline_report['mean_disk_contacts']:+.4f}",
+            )
+        )
+    print(f"stage=teacher_comparison mode={mode} {' '.join(values)}", flush=True)
 
 
 def _teacher_selection_score(report):
@@ -708,7 +765,14 @@ def main(argv=None):
         args.teacher_minibatches,
         args.teacher_unroll_length,
     )
-    print(f"stage=teacher_step_plan {json.dumps(training_plan, sort_keys=True)}", flush=True)
+    print(
+        "stage=teacher_step_plan "
+        f"requested={training_plan['requested_steps']:,} "
+        f"effective={training_plan['estimated_effective_steps']:,} "
+        f"quantum={training_plan['step_quantum']:,} "
+        f"eval_intervals={training_plan['evaluation_intervals']}",
+        flush=True,
+    )
 
     configure_cloud_runtime(
         xla_triton=args.xla_triton,
@@ -819,10 +883,7 @@ def main(argv=None):
     (teacher_dir / "ik_baseline_nominal_evaluation.json").write_text(
         json.dumps(nominal_baseline_report, indent=2), encoding="utf-8"
     )
-    print(
-        f"stage=ik_baseline_nominal {json.dumps(nominal_baseline_report, sort_keys=True)}",
-        flush=True,
-    )
+    _print_evaluation_summary("ik_baseline", nominal_baseline_report, "nominal")
     if args.teacher_disturbances:
         disturbed_baseline_report = _evaluate_teacher(
             jax,
@@ -835,19 +896,11 @@ def main(argv=None):
         (teacher_dir / "ik_baseline_disturbed_evaluation.json").write_text(
             json.dumps(disturbed_baseline_report, indent=2), encoding="utf-8"
         )
-        print(
-            "stage=ik_baseline_disturbed "
-            f"{json.dumps(disturbed_baseline_report, sort_keys=True)}",
-            flush=True,
-        )
+        _print_evaluation_summary("ik_baseline", disturbed_baseline_report, "disturbed")
     else:
         disturbed_baseline_report = nominal_baseline_report
     (teacher_dir / "ik_baseline_evaluation.json").write_text(
         json.dumps(disturbed_baseline_report, indent=2), encoding="utf-8"
-    )
-    print(
-        f"stage=ik_baseline {json.dumps(disturbed_baseline_report, sort_keys=True)}",
-        flush=True,
     )
     checkpoint_kwargs = {}
     ppo_parameters = inspect.signature(ppo.train).parameters
@@ -884,11 +937,10 @@ def main(argv=None):
             model_io.save_params(teacher_dir / "params_ppo_best", params)
             print(
                 f"stage=teacher_best step={int(step):,} score={score:.5f} "
-                f"mean_velocity_x={summary.get('mean_velocity_x', float('nan')):.5f} "
-                f"mean_velocity_error={summary.get('mean_velocity_error', float('nan')):.5f} "
-                f"mean_roll_pitch_rate_rms="
-                f"{summary.get('mean_roll_pitch_rate_rms', float('nan')):.5f} "
-                f"failure_rate={summary.get('failure_rate', 0.0):.5f}",
+                f"vx={summary.get('mean_velocity_x', float('nan')):.4f} "
+                f"vx_error={summary.get('mean_velocity_error', float('nan')):.4f} "
+                f"roll_pitch={summary.get('mean_roll_pitch_rate_rms', float('nan')):.4f} "
+                f"failure={summary.get('failure_rate', 0.0):.3f}",
                 flush=True,
             )
 
@@ -1061,6 +1113,17 @@ def main(argv=None):
         f"saved={selected_params_path}",
         flush=True,
     )
+    _print_teacher_comparison(
+        "nominal", nominal_ppo_report, nominal_baseline_selection_report
+    )
+    if args.teacher_disturbances:
+        _print_teacher_comparison(
+            "disturbed",
+            disturbed_ppo_report,
+            disturbed_baseline_selection_report,
+            _disturbed_teacher_score(disturbed_ppo_report)
+            - _disturbed_teacher_score(disturbed_baseline_selection_report),
+        )
 
     absolute_teacher_accepted = (
         teacher_report["mean_velocity_x"] >= args.min_accepted_teacher_vx
@@ -1115,7 +1178,26 @@ def main(argv=None):
     (teacher_dir / "evaluation.json").write_text(
         json.dumps(teacher_report, indent=2), encoding="utf-8"
     )
-    print(f"stage=teacher_acceptance {json.dumps(teacher_report, sort_keys=True)}", flush=True)
+    selected_nominal_report = (
+        nominal_ppo_report if selected_source == "ppo" else nominal_baseline_selection_report
+    )
+    selected_disturbed_report = (
+        disturbed_ppo_report
+        if selected_source == "ppo"
+        else disturbed_baseline_selection_report
+    )
+    _print_evaluation_summary("teacher_result", selected_nominal_report, "nominal")
+    if args.teacher_disturbances:
+        _print_evaluation_summary("teacher_result", selected_disturbed_report, "disturbed")
+    print(
+        f"stage=teacher_acceptance accepted={teacher_accepted} "
+        f"source={selected_source} step={selected_step:,} "
+        f"nominal_preserved={ppo_preserves_baseline} "
+        f"disturbed_improved={ppo_improves_disturbed} "
+        f"absolute_thresholds={absolute_teacher_accepted} "
+        f"report={teacher_dir / 'evaluation.json'}",
+        flush=True,
+    )
     if args.strict_acceptance and not teacher_accepted:
         print("stage=pipeline_stopped reason=teacher_acceptance_failed", flush=True)
         raise SystemExit(2)
@@ -1251,7 +1333,7 @@ def main(argv=None):
     student_path = args.out / "student_policy.npz"
     _save_student_policy(student_path, student_params, obs_mean, obs_std, metadata)
     (args.out / "evaluation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"stage=student_eval {json.dumps(report, sort_keys=True)}", flush=True)
+    _print_evaluation_summary("student_eval", report)
     print(f"stage=pipeline_done student_policy={student_path} accepted={accepted}", flush=True)
     if args.strict_acceptance and not accepted:
         raise SystemExit(2)

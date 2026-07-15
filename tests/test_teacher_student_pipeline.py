@@ -228,6 +228,62 @@ def test_teacher_summary_separates_net_and_instantaneous_velocity_error():
     assert abs(summary["mean_instantaneous_velocity_error"] - 0.0794) < 1e-8
 
 
+def test_terminal_evaluation_summary_is_compact(capsys):
+    from scripts.train_forward_teacher_student import _print_evaluation_summary
+
+    _print_evaluation_summary(
+        "teacher_result",
+        {
+            "reward_per_step": 1.5,
+            "mean_velocity_x": 0.08,
+            "mean_forward_distance": 0.8,
+            "failure_rate": 0.0,
+            "mean_roll_pitch_rate_rms": 0.2,
+            "mean_abs_velocity_y": 0.03,
+            "mean_abs_yaw_rate": 0.1,
+            "mean_disk_contacts": 0.0,
+            "mean_post_push_velocity_error": 0.04,
+            "mean_recovery_time": 0.4,
+            "push_coverage": 1.0,
+        },
+        "disturbed",
+    )
+    output = capsys.readouterr().out
+
+    assert "stage=teacher_result mode=disturbed" in output
+    assert "post_error=0.0400" in output
+    assert "recovery_s=0.400" in output
+    assert "{" not in output
+
+
+def test_terminal_teacher_comparison_shows_readable_deltas(capsys):
+    from scripts.train_forward_teacher_student import _print_teacher_comparison
+
+    baseline = {
+        "mean_velocity_x": 0.08,
+        "failure_rate": 0.1,
+        "mean_roll_pitch_rate_rms": 0.3,
+        "mean_post_push_velocity_error": 0.08,
+        "mean_recovery_time": 0.5,
+        "mean_forward_distance": 0.7,
+        "mean_disk_contacts": 0.02,
+    }
+    ppo = {
+        **baseline,
+        "mean_velocity_x": 0.081,
+        "failure_rate": 0.05,
+        "mean_recovery_time": 0.4,
+    }
+
+    _print_teacher_comparison("disturbed", ppo, baseline, score_gain=0.03)
+    output = capsys.readouterr().out
+
+    assert "score_gain=+0.0300" in output
+    assert "delta_failure=-0.050" in output
+    assert "delta_recovery_s=-0.100" in output
+    assert "{" not in output
+
+
 def test_teacher_env_has_privileged_residual_and_student_modes():
     source = open("disk_robot_mjx/teacher_student_env.py", encoding="utf-8").read()
 

@@ -119,6 +119,19 @@ def test_ground_push_plants_then_sweeps_rear_feet():
     assert push[6:] == [-0.76, 0.0, -0.3, 0.76, 0.0, 0.3]
 
 
+def test_repeated_push_can_keep_rolling_front_targets():
+    from scripts.simulate_extreme_disk_pose import ground_rear_push_targets
+
+    folded = [-0.251, 0.0, 0.88, 0.251, 0.0, -0.88, -1.6, 0.0, 0.88, 1.6, 0.0, -0.88]
+    rolling = [-2.1452, 0.0, -1.075, 2.1452, 0.0, 1.075]
+    plant, push = ground_rear_push_targets(folded)
+    plant[:6] = rolling
+    push[:6] = rolling
+
+    assert plant[:6] == rolling
+    assert push[:6] == rolling
+
+
 def test_axial_rolling_pose_is_front_rear_and_left_right_symmetric():
     from scripts.simulate_extreme_disk_pose import axial_rolling_target
 
