@@ -2,5 +2,6 @@ mujoco>=3.0
 numpy>=1.24
 jax[cuda12]>=0.4
 brax>=0.10
+optax>=0.2
 wandb>=0.17
 imageio[ffmpeg]>=2.34

@@ -43,16 +43,23 @@ The XML keeps 12 independent position actuators. Paired front/rear flex control 
 
 ## Walk Training Status
 
-The current scripts are suitable for environment and MJX smoke tests:
+The active model is `assets/pupper_v3_disk_visual.xml`. The forward training path uses a
+symmetric IK reference, a privileged residual PPO teacher, behavior cloning, and DAgger to
+produce a student that runs without IK or gait phase inputs.
+
+Run the complete pipeline in the offline Linux `mjx312` environment:
 
 ```bash
-python -m pip install -r requirements-mjx.txt
-python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128 --command-profile forward
+python -m scripts.train_forward_teacher_student --smoke --out mjx_runs/forward_ts_smoke
+python -m scripts.train_forward_teacher_student --out mjx_runs/forward_ts --strict-acceptance
 ```
 
-This short run checks MJX compilation and metrics only. The controller is a
-command-conditioned static-pose residual policy; runtime open-loop gait is not part
-of the design. After the forward profile learns reliable tracking, continue with
-`--command-profile omni`, then `--command-profile full`.
+The offline instance must already have the packages in `requirements-mjx.txt` available in
+the active `mjx312` environment.
+
+The final deployable artifact is `mjx_runs/forward_ts/student_policy.npz`. See
+`docs/forward_teacher_student.md` for the observation contract, stages, outputs, evaluation,
+and checkpoint recovery command. The older `mjx_train_walk` entry remains available for
+environment regression only; it is not the active teacher-student pipeline.
 
 The default MuJoCo GL backend for cloud training is `egl`; use `--mujoco-gl osmesa` only on machines with a working OSMesa stack.

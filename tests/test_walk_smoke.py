@@ -1,9 +1,10 @@
 def test_walk_env_imports_without_loading_mujoco():
     import sys
 
+    mujoco_before = sys.modules.get("mujoco")
     from disk_robot.walk_env import DEFAULT_XML, DiskRobotWalkEnv
 
-    assert "mujoco" not in sys.modules
+    assert sys.modules.get("mujoco") is mujoco_before
     assert DEFAULT_XML.name == "pupper_v3_disk_visual.xml"
     assert DiskRobotWalkEnv.__name__ == "DiskRobotWalkEnv"
 
