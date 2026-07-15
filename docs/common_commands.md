@@ -1,6 +1,6 @@
 # Disk Robot 常用命令
 
-> 当前训练定义见 [omnidirectional_training_pipeline.md](omnidirectional_training_pipeline.md)。本页只记录可运行入口，不定义算法。
+> 当前训练定义见 [forward_teacher_student.md](forward_teacher_student.md)。本页只记录可运行入口，不定义算法。
 
 以下命令默认从 `disk_robot/` 目录执行。
 
@@ -34,68 +34,40 @@ python -m scripts.simulate_extreme_disk_pose
 python -m scripts.simulate_extreme_disk_pose --headless --steps 1000
 ```
 
-## 行走环境诊断
+## IK 与结构检查
 
 ```powershell
-python -m scripts.walk_smoke --steps 100 --policy zero
-python -m scripts.walk_smoke --steps 100 --policy random
-python -m scripts.mjx_train_walk --help
+python3.12 scripts\view_ik_gait.py --training-reference --neutral-pose model --duration 0
+python3.12 scripts\view_ik_gait.py --xml assets\pupper_v3_disk_structure_candidate.xml --training-reference --neutral-pose model --duration 0
+python -m scripts.sweep_structure_variants
 ```
 
-迁移期 MJX 冒烟：
+## 当前 Teacher-Student 训练
 
-```powershell
-python -m scripts.mjx_train_walk --steps 10000 --envs 128 --episode-length 128 --command-profile forward
-```
-
-`10k` steps 只能检查编译、rollout 和日志链路。正式训练依次使用：
-
-```powershell
-python -m scripts.mjx_train_walk --steps 5000000 --envs 2048 --episode-length 500 --command-profile forward --out mjx_runs/forward
-python -m scripts.mjx_train_walk --steps 20000000 --envs 2048 --episode-length 500 --command-profile omni --out mjx_runs/omni
-python -m scripts.mjx_train_walk --steps 30000000 --envs 2048 --episode-length 500 --command-profile full --out mjx_runs/full
-```
-
-当前 Brax 入口会分别启动 run；在没有可靠 optimizer-state 恢复前，不应把它描述为连续 curriculum。先使用 `forward` 验证环境可学，再决定是否增加 checkpoint/optimizer 连续迁移。
-
-## Teacher 引导训练
-
-第一阶段只学习已验证 teacher，固定 `vx=0.15 m/s`：
+云端 smoke：
 
 ```bash
-python -m scripts.mjx_train_walk \
-  --steps 1000000 --envs 1024 --episode-length 500 \
-  --command-profile forward --command-vx 0.15 0.15 \
-  --teacher-blend 1.0 --reward-teacher-imitation 1.0 \
-  --out mjx_runs/teacher_stage1
+python -m scripts.train_forward_teacher_student --smoke --xml-path assets/pupper_v3_disk_structure_candidate.xml --out mjx_runs/forward_candidate_smoke
 ```
 
-第二阶段让策略承担一半控制：
+Smoke 仅验证整条软件链路。Student 验收失败不表示代码报错，先检查 `stage=ik_baseline` 和 `stage=teacher_acceptance`。
+
+结构和 IK baseline 经可视化确认后，运行正式低速前进训练：
 
 ```bash
-python -m scripts.mjx_train_walk \
-  --steps 2000000 --envs 1024 --episode-length 500 \
-  --command-profile forward --command-vx 0.15 0.15 \
-  --teacher-blend 0.5 --reward-teacher-imitation 0.3 \
-  --restore-checkpoint mjx_runs/teacher_stage1/ppo_checkpoint \
-  --out mjx_runs/teacher_stage2
+python -m scripts.train_forward_teacher_student --xml-path assets/pupper_v3_disk_structure_candidate.xml --out mjx_runs/forward_candidate_v1 --teacher-evals 21 --strict-acceptance
 ```
 
-第三阶段完全关闭 teacher：
+单独评估 Student：
 
 ```bash
-python -m scripts.mjx_train_walk \
-  --steps 3000000 --envs 1024 --episode-length 500 \
-  --command-profile forward --command-vx 0.15 0.15 \
-  --teacher-blend 0.0 --reward-teacher-imitation 0.0 \
-  --restore-checkpoint mjx_runs/teacher_stage2/ppo_checkpoint \
-  --out mjx_runs/teacher_stage3_pure
+python -m scripts.evaluate_forward_student mjx_runs/forward_candidate_v1/student_policy.npz
 ```
 
-只有第三阶段视频仍能前进，才说明策略真正接管。脚本会自动选择 `ppo_checkpoint/` 下编号最大的 checkpoint。若该目录没有生成，说明云端 Brax 版本不支持官方 checkpoint API，应先升级或检查启动日志。
+旧的 `scripts.mjx_train_walk`、`teacher_blend` 退火和 `0.15 m/s` 命令仍可用于历史实验，但不再是当前 pipeline 的验收入口。
 
 ## 云端提示
 
 - 默认 MuJoCo GL 后端使用 `egl`。
 - 仅在 OSMesa 配置完整的机器上使用 `--mujoco-gl osmesa`。
-- 长训练前先运行单元测试和短 MJX 冒烟，并保存配置、commit 和评估 command 网格。
+- 长训练前先运行单元测试和短 MJX 冒烟，并使用新的输出目录保存配置和评估结果。

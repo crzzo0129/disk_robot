@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from disk_robot.gait_speed import plan_forward_gait
 from disk_robot.ik_reference import IKReferenceSpec, build_ik_reference
 from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
 from disk_robot_mjx.pipeline import configure_cloud_runtime, make_network_factory
@@ -35,8 +36,10 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-minibatches", type=int, default=32)
     parser.add_argument("--teacher-updates-per-batch", type=int, default=4)
     parser.add_argument("--teacher-restore", type=Path, default=None)
-    parser.add_argument("--min-accepted-teacher-vx", type=float, default=0.02)
+    parser.add_argument("--min-accepted-teacher-vx", type=float, default=None)
     parser.add_argument("--max-accepted-teacher-failure-rate", type=float, default=0.10)
+    parser.add_argument("--max-accepted-teacher-velocity-error", type=float, default=0.03)
+    parser.add_argument("--max-accepted-teacher-roll-pitch-rate", type=float, default=0.50)
 
     parser.add_argument("--rollout-envs", type=int, default=256)
     parser.add_argument("--rollout-horizon", type=int, default=500)
@@ -51,18 +54,26 @@ def parse_args(argv=None):
     parser.add_argument("--save-dataset", action="store_true")
 
     parser.add_argument("--eval-envs", type=int, default=256)
-    parser.add_argument("--min-accepted-vx", type=float, default=0.02)
+    parser.add_argument("--min-accepted-vx", type=float, default=None)
     parser.add_argument("--max-accepted-failure-rate", type=float, default=0.10)
+    parser.add_argument("--max-accepted-velocity-error", type=float, default=0.03)
+    parser.add_argument("--max-accepted-roll-pitch-rate", type=float, default=0.60)
     parser.add_argument("--strict-acceptance", action="store_true")
 
     parser.add_argument("--ik-samples", type=int, default=256)
+    parser.add_argument(
+        "--ik-speed-mode",
+        choices=("command", "manual"),
+        default="command",
+        help="Derive the IK gait from --command-vx or use explicit IK parameters.",
+    )
     parser.add_argument("--ik-frequency", type=float, default=0.8)
     parser.add_argument("--ik-stride", type=float, default=0.04)
     parser.add_argument("--ik-height", type=float, default=0.025)
     parser.add_argument("--ik-duty", type=float, default=0.72)
-    parser.add_argument("--command-vx", type=float, default=0.03)
-    parser.add_argument("--kp", type=float, default=7.5)
-    parser.add_argument("--kd", type=float, default=0.25)
+    parser.add_argument("--command-vx", type=float, default=0.08)
+    parser.add_argument("--kp", type=float, default=10.0)
+    parser.add_argument("--kd", type=float, default=0.4)
     parser.add_argument("--torque-limit", type=float, default=3.0)
     parser.add_argument("--startup-steps", type=int, default=25)
 
@@ -71,6 +82,45 @@ def parse_args(argv=None):
     parser.set_defaults(xla_triton=True)
     parser.add_argument("--smoke", action="store_true")
     return parser.parse_args(argv)
+
+
+def _resolve_reference_spec(args) -> tuple[IKReferenceSpec, dict]:
+    if args.ik_speed_mode == "command":
+        try:
+            plan = plan_forward_gait(args.command_vx)
+        except ValueError as exc:
+            raise SystemExit(f"cannot build command-conditioned IK reference: {exc}") from exc
+        frequency = plan.frequency
+        stride = plan.stride_length
+        height = args.ik_height * plan.motion_scale
+        source = {
+            "mode": "command",
+            "target_speed": plan.target_speed,
+            "calibration": "candidate_structure_v1",
+        }
+    else:
+        frequency = args.ik_frequency
+        stride = args.ik_stride
+        height = args.ik_height
+        source = {"mode": "manual"}
+
+    spec = IKReferenceSpec(
+        samples=args.ik_samples,
+        frequency=frequency,
+        stride_length=stride,
+        step_height=height,
+        duty=args.ik_duty,
+        mode="trot",
+    )
+    return spec, source
+
+
+def _resolve_acceptance_thresholds(args) -> None:
+    minimum_velocity = max(0.02, args.command_vx - 0.02)
+    if args.min_accepted_teacher_vx is None:
+        args.min_accepted_teacher_vx = minimum_velocity
+    if args.min_accepted_vx is None:
+        args.min_accepted_vx = minimum_velocity
 
 
 def _resolve_latest_checkpoint(path: Path) -> Path:
@@ -249,6 +299,7 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
     denominator = max(float(np.sum(alive)), 1.0)
     return {
         "mean_velocity_x": float(np.sum(vx * alive) / denominator),
+        "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
         "mean_velocity_error": float(np.sum(velocity_error * alive) / denominator),
         "mean_roll_pitch_rate_rms": float(np.sum(roll_pitch_rate * alive) / denominator),
         "failure_rate": float(np.mean(np.max(failed, axis=0))),
@@ -388,6 +439,7 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
     failed_any = np.max(failed, axis=0)
     return {
         "mean_velocity_x": float(np.sum(vx * alive) / denominator),
+        "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
         "mean_velocity_error": float(np.sum(velocity_error * alive) / denominator),
         "mean_roll_pitch_rate_rms": float(np.sum(roll_pitch_rate * alive) / denominator),
         "mean_disk_contacts": float(np.sum(disk_contact * alive) / denominator),
@@ -398,6 +450,7 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
 
 def main(argv=None):
     args = parse_args(argv)
+    _resolve_acceptance_thresholds(args)
     if args.smoke:
         args.teacher_steps = min(args.teacher_steps, 20_000)
         args.teacher_envs = min(args.teacher_envs, 64)
@@ -447,21 +500,30 @@ def main(argv=None):
         torque_limit=args.torque_limit,
         startup_blend_steps=args.startup_steps,
     )
-    reference_spec = IKReferenceSpec(
-        samples=args.ik_samples,
-        frequency=args.ik_frequency,
-        stride_length=args.ik_stride,
-        step_height=args.ik_height,
-        duty=args.ik_duty,
-        mode="trot",
+    reference_spec, reference_source = _resolve_reference_spec(args)
+    print(
+        "stage=ik_reference status=building source=xml_stand "
+        f"speed_mode={reference_source['mode']} command_vx={args.command_vx:g} "
+        f"frequency={reference_spec.frequency:g} stride={reference_spec.stride_length:g} "
+        f"height={reference_spec.step_height:g} duty={reference_spec.duty:g}",
+        flush=True,
     )
-    print("stage=ik_reference status=building source=xml_stand", flush=True)
     reference = build_ik_reference(args.xml_path, reference_spec)
     np.savez(
         args.out / "ik_reference.npz",
         joint_targets=reference.joint_targets,
         desired_contacts=reference.desired_contacts,
         stand_q=reference.stand_q,
+    )
+    run_config = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+    }
+    run_config["resolved_ik_reference"] = asdict(reference_spec)
+    run_config["ik_reference_source"] = reference_source
+    (args.out / "run_config.json").write_text(
+        json.dumps(run_config, indent=2),
+        encoding="utf-8",
     )
 
     teacher_env = make_forward_teacher_student_env(
@@ -510,7 +572,12 @@ def main(argv=None):
         if reward_per_step is None:
             return
         failure_rate = summary.get("failure_rate", 0.0)
-        score = reward_per_step - 2.0 * failure_rate
+        score = (
+            reward_per_step
+            - 2.0 * failure_rate
+            - 0.5 * summary.get("mean_velocity_error", 0.0)
+            - 0.1 * summary.get("mean_roll_pitch_rate_rms", 0.0)
+        )
         if best_teacher["score"] is None or score > best_teacher["score"]:
             best_teacher.update(
                 score=score,
@@ -522,6 +589,9 @@ def main(argv=None):
             print(
                 f"stage=teacher_best step={int(step):,} score={score:.5f} "
                 f"mean_velocity_x={summary.get('mean_velocity_x', float('nan')):.5f} "
+                f"mean_velocity_error={summary.get('mean_velocity_error', float('nan')):.5f} "
+                f"mean_roll_pitch_rate_rms="
+                f"{summary.get('mean_roll_pitch_rate_rms', float('nan')):.5f} "
                 f"failure_rate={failure_rate:.5f}",
                 flush=True,
             )
@@ -585,10 +655,18 @@ def main(argv=None):
     teacher_accepted = (
         teacher_report["mean_velocity_x"] >= args.min_accepted_teacher_vx
         and teacher_report["failure_rate"] <= args.max_accepted_teacher_failure_rate
+        and teacher_report["mean_velocity_error"]
+        <= args.max_accepted_teacher_velocity_error
+        and teacher_report["mean_roll_pitch_rate_rms"]
+        <= args.max_accepted_teacher_roll_pitch_rate
     )
     teacher_report["accepted"] = teacher_accepted
     teacher_report["minimum_velocity_x"] = args.min_accepted_teacher_vx
     teacher_report["maximum_failure_rate"] = args.max_accepted_teacher_failure_rate
+    teacher_report["maximum_velocity_error"] = args.max_accepted_teacher_velocity_error
+    teacher_report["maximum_roll_pitch_rate_rms"] = (
+        args.max_accepted_teacher_roll_pitch_rate
+    )
     teacher_report["selected_step"] = selected_step
     (teacher_dir / "evaluation.json").write_text(
         json.dumps(teacher_report, indent=2), encoding="utf-8"
@@ -689,10 +767,14 @@ def main(argv=None):
     accepted = (
         report["mean_velocity_x"] >= args.min_accepted_vx
         and report["failure_rate"] <= args.max_accepted_failure_rate
+        and report["mean_velocity_error"] <= args.max_accepted_velocity_error
+        and report["mean_roll_pitch_rate_rms"] <= args.max_accepted_roll_pitch_rate
     )
     report["accepted"] = accepted
     report["minimum_velocity_x"] = args.min_accepted_vx
     report["maximum_failure_rate"] = args.max_accepted_failure_rate
+    report["maximum_velocity_error"] = args.max_accepted_velocity_error
+    report["maximum_roll_pitch_rate_rms"] = args.max_accepted_roll_pitch_rate
 
     metadata = {
         "format": "disk_robot_student_mlp_v1",
@@ -706,15 +788,12 @@ def main(argv=None):
         "command": [config.command_vx, 0.0, 0.0],
         "config": asdict(config),
         "ik_reference": asdict(reference_spec),
+        "ik_reference_source": reference_source,
         "evaluation": report,
     }
     student_path = args.out / "student_policy.npz"
     _save_student_policy(student_path, student_params, obs_mean, obs_std, metadata)
     (args.out / "evaluation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    (args.out / "run_config.json").write_text(
-        json.dumps({key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}, indent=2),
-        encoding="utf-8",
-    )
     print(f"stage=student_eval {json.dumps(report, sort_keys=True)}", flush=True)
     print(f"stage=pipeline_done student_policy={student_path} accepted={accepted}", flush=True)
     if args.strict_acceptance and not accepted:

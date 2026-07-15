@@ -1,6 +1,6 @@
 # Extreme Disk Quadruped TODO
 
-> 行走训练任务以 [omnidirectional_training_pipeline.md](omnidirectional_training_pipeline.md) 为准。
+> 当前执行以 [forward_teacher_student.md](forward_teacher_student.md) 为准；[omnidirectional_training_pipeline.md](omnidirectional_training_pipeline.md) 只记录长期路线。
 
 ## 已完成基础
 
@@ -31,25 +31,32 @@
 - [x] 记录 reward breakdown、速度误差、跌倒率、滑移与 action RMS。
 - [ ] 增加 actuator force 和机械功指标。
 
-## P1：示范初始化
+## P1：当前 Teacher-Student 基线
 
-- [x] 在当前 Pupper XML 上搜索并固化稳定前进 teacher。
+- [x] 实现对称 IK v2、privileged residual PPO Teacher、BC 和 DAgger 完整入口。
 - [x] 保证最终 actor 不输入 gait phase。
-- [x] 增加 teacher blend、imitation reward 和 checkpoint 权重恢复入口。
-- [ ] 完成 `1.0 → 0.5 → 0.0` 云端训练，验证关闭 teacher 后仍可持续推进。
-- [ ] 若几何修改使 teacher 回归失败，重新搜索 teacher 参数。
+- [x] 增加 IK baseline、最佳 Teacher 保存、checkpoint 恢复和严格验收。
+- [x] 使用世界前向净位移阻止通过躯干摇晃刷速度。
+- [x] 完成结构参数扫描并生成候选 XML。
+- [ ] 本地人工验收结构候选的 IK gait、自碰撞和足端轨迹。
+- [ ] 在云端候选 XML 上重新运行 IK baseline 和 smoke。
+- [ ] 训练并验收正式 Teacher；未通过时先改结构、IK 或控制，不继续蒸馏。
+- [ ] Teacher 通过后完成 BC、DAgger 和 Student-only 验收。
 
-## P1：PPO 与 Command Curriculum
+## P1：解除 Gait 锚点与 Command Curriculum
 
-- [ ] 从 BC checkpoint 启动基础前进 PPO。
+- [ ] 实现 command-conditioned IK reference。
+- [ ] 实现 IK 锚点权重 `beta` 从 1 到 0 的退火，并同步扩大完整动作范围。
+- [ ] 从 BC/DAgger Student 启动无 IK 的 PPO fine-tuning。
 - [ ] 在同一 run 内逐步扩展 `vx`，不重置 optimizer。
 - [ ] 加入停止、后退、`vy` 和 `wz`，最后联合采样。
 - [ ] 固定 evaluation seeds 与 command 网格，按门槛扩大任务空间。
-- [ ] 将 imitation loss 平滑衰减到 0，执行无 teacher 验收。
+- [ ] 在 `0.1 m/s` 前进通过后再进入全向任务。
 
 ## P2：Sim-to-real
 
 - [ ] 根据 CAD、称重和电机数据更新质量、质心、惯量、增益和力矩范围。
+- [ ] 验证或实现实机 body linear velocity 状态估计；否则从 Student observation 移除。
 - [ ] 分阶段加入摩擦、动力学、噪声、延迟、地形和外力随机化。
 - [ ] 建立训练关节命令到 Pupper position action 的一致性检查。
 - [ ] 实机先做悬空、小幅动作、急停和关节限位验证，再落地测试。

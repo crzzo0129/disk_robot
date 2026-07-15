@@ -1,77 +1,184 @@
 # Forward Teacher-Student Pipeline
 
-## 目标
+> 状态：当前可执行训练规范。Teacher、BC、DAgger 和 Student 评估链路已经实现并通过 smoke test，但尚未得到通过正式验收的 Teacher/Student。
+>
+> 更新日期：2026-07-15
 
-该入口以 `assets/pupper_v3_disk_visual.xml` 的 `stand` keyframe 为唯一中立姿态，自动完成：
+## 1. 当前结论
 
-1. 根据 XML 几何生成对称 trot IK v2 周期表。
-2. 训练读取 phase、接触状态和 IK 跟踪误差的 privileged residual PPO teacher。
-3. 让 teacher 生成 `(student observation, full position action)` 示范。
-4. 训练不读取 phase、IK 或接触真值的 student。
-5. 让 student 闭环运行并执行 DAgger 修正。
-6. 在完全关闭运行时 IK 后评估 student 并输出策略文件。
+当前实现和最初方案的主干相同：
 
-Teacher 动作：
+1. 从 XML 的 `stand` keyframe 构造对称 trot IK reference。
+2. 用 privileged residual PPO 训练 Teacher。
+3. Teacher 生成 `(student observation, full position action)` 数据集。
+4. Student 先做 Behavior Cloning，再做 DAgger。
+5. 最终只部署 Student，不在运行时计算 IK，也不给 Student privileged observation。
+
+但它已经不是最初文档里的原样版本。现在增加了最佳 Teacher 选择、IK baseline、启动混合、世界前向净位移指标、更严格的 Teacher/Student 验收，以及结构候选验证。当前版本仍然只是固定 `0.03 m/s`、固定 trot reference 的第一阶段，不代表已经解决 `0.1 m/s` 或任意速度、任意方向控制。
+
+正式长训练暂缓。先确认结构候选和 IK reference 能产生真实净前进，再投入 5M Teacher PPO。
+
+## 2. 模型与 stand
+
+默认模型：
 
 ```text
-q_target = q_ik(phase) + residual_scale * teacher_action
+assets/pupper_v3_disk_visual.xml
 ```
 
-Student 动作：
+待验证的结构候选：
 
 ```text
-q_target = q_stand + student_action_scale * student_action
+assets/pupper_v3_disk_structure_candidate.xml
 ```
 
-最终部署对象是 student，不是 teacher。Teacher 只用于训练和 DAgger 标注。
+候选相对当前模型采用 `hip y = +/-0.09 m`、腿长比例 `0.85`、圆盘半径 `0.20 m`。选择依据见 [structure_variant_study.md](structure_variant_study.md)。在本地固定 trot 扫描中，候选的世界前向速度约为 `0.0277 m/s`，当前结构约为 `0.0201 m/s`；这只是结构筛选结果，不等于云端 Teacher baseline。
 
-这里的 `stand` 是完整 XML 模型姿态，不等同于“十二个关节数值为零时腿是直的”。即使
-`stand_q` 的十二个关节坐标都是 `0`，各级 body 的四元数、关节轴和局部坐标系仍决定了
-实际带角度的站姿。IK 的中立足端位置和 student 的关节偏移都从这个 keyframe 解析，代码中
-不存在另一套 Pupper 默认关节数组。
+`stand` 指 XML 中完整的 keyframe 姿态。即使 12 个关节坐标都是零，各级 body 的四元数、关节轴和局部坐标仍会形成带角度的站姿，因此不能把 `stand` 理解为“十二条关节轴全部处于几何直腿”。IK 中立足端和 Student 的动作基准都从该 keyframe 解析。
 
-## 离线 Linux 云端
+## 3. 当前动作定义
 
-以下命令默认从 `disk_robot/` 目录运行。云实例无需联网，但 `mjx312` 环境必须已经包含 JAX、MJX、Brax 和 Optax。
+Teacher 输出 IK 周围的小残差：
 
-先运行完整链路烟测：
+```text
+q_target = q_ik(phase) + residual_scale * tanh(teacher_policy)
+```
+
+每条腿的 `residual_scale` 为：
+
+```text
+[0.10, 0.16, 0.20] rad
+```
+
+Student 不读取 IK，直接输出相对 `stand` 的完整位置动作：
+
+```text
+q_target = q_stand + student_action_scale * tanh(student_policy)
+```
+
+每条腿的 `student_action_scale` 为：
+
+```text
+[0.35, 0.60, 0.85] rad
+```
+
+默认位置环为 `Kp=10.0`、`Kd=0.4`、力矩上限 `3 Nm`。Teacher 和 DAgger 从 `stand` 重置，并用 25 个控制步，约 0.5 秒，平滑混合到 IK 周期。
+
+## 4. 观测契约
+
+Student 每帧观测为 48 维，堆叠 4 帧后共 192 维：
+
+```text
+body angular velocity          3
+projected gravity              3
+body linear velocity           3
+joint position - q_stand      12
+joint velocity                12
+previous action               12
+command [vx, vy, wz]           3
+```
+
+当前 `body linear velocity` 来自仿真真值。它没有进入这里所说的 privileged 尾部，但实机仍需状态估计器提供等价量，否则必须在后续训练中加噪、蒸馏掉或移除。现在生成的 Student 不能在没有速度估计的情况下直接上实机。
+
+Teacher 观测为 Student 的 192 维历史加 35 维 privileged 信息，共 227 维：
+
+```text
+phase sin/cos                  2
+startup blend                 1
+desired contacts              4
+actual contacts               4
+IK tracking error            12
+previous residual            12
+```
+
+世界坐标前向速度和净位移用于 reward、评估和防止“前后摇晃刷速度”，不输入 Student actor。机身坐标速度仍作为诊断量输出。
+
+## 5. 当前 IK reference
+
+默认参数是：
+
+```text
+mode=trot
+frequency=0.8 Hz
+stride=0.04 m
+height=0.025 m
+duty=0.72
+command_vx=0.03 m/s
+```
+
+旧结构在第一次云端零 residual baseline 中的 `mean_velocity_x` 只有约 `0.0063 m/s`，并存在靠躯干摇晃产生速度读数的问题。因此 `0.03 m/s` 是当前第一阶段的命令目标，不是已经证明可达的旧结构基线。结构候选必须重新跑 baseline，不能借用本地结构扫描结果代替。
+
+## 6. 训练阶段
+
+### Stage A1：结构和 IK 闸门
+
+先在本地 Viewer 检查候选结构的站立、摆腿、离地高度、关节方向和是否发生自碰撞：
+
+```powershell
+python3.12 scripts\view_ik_gait.py --xml assets\pupper_v3_disk_structure_candidate.xml --training-reference --neutral-pose model --duration 0
+```
+
+然后在云端运行候选 smoke：
 
 ```bash
-python -m scripts.train_forward_teacher_student --smoke --out mjx_runs/forward_ts_smoke
+python -m scripts.train_forward_teacher_student --smoke --xml-path assets/pupper_v3_disk_structure_candidate.xml --out mjx_runs/forward_candidate_smoke
 ```
 
-烟测只验证编译、PPO、rollout、BC、DAgger、保存和评估链路，不代表策略已经学会。
+Smoke 只验证编译、PPO、rollout、BC、DAgger、保存和评估链路。Smoke Student 不通过验收是正常的；需要重点检查 `stage=ik_baseline` 的世界净前进、姿态晃动和失败率。
 
-正式训练使用一条命令：
+### Stage A2：Privileged residual PPO Teacher
+
+只有 IK/结构闸门通过后才运行正式训练：
 
 ```bash
-python -m scripts.train_forward_teacher_student --out mjx_runs/forward_ts --strict-acceptance
+python -m scripts.train_forward_teacher_student --xml-path assets/pupper_v3_disk_structure_candidate.xml --out mjx_runs/forward_candidate_v1 --teacher-evals 21 --strict-acceptance
 ```
 
-默认正式规模：
+正式默认规模为：Teacher 5M environment steps、2048 个并行环境、131072 条示范、Student BC 20000 次更新、2 轮 DAgger、每轮 65536 条 on-policy 状态和 5000 次更新，最终使用 256 个 Student-only 环境评估。
 
-- Teacher PPO：5M environment steps，2048 个并行环境。
-- Teacher 示范：131072 条。
-- Student BC：20000 次更新。
-- DAgger：2 轮，每轮 65536 条 student 访问状态和 5000 次更新。
-- 最终评估：256 个 student-only 环境，每个 500 control steps。
+PPO 训练期间会持续评估并保存评分最高的 Teacher。最终验收和数据蒸馏使用最佳参数，不直接使用最后一次更新的参数。
 
-训练环境分为三种固定角色：`teacher` 使用 IK residual，`dagger` 让 student 执行动作同时让
-teacher 生成标签，`student` 只从 `stand` 重置并执行完整关节位置动作。最终评估使用第三种，
-不会构建 IK reference，也不会计算 phase、期望接触或 privileged observation。
+### Stage A3：BC、DAgger 和 Student-only 验收
 
-Teacher 和 DAgger 也从 `stand` 起步，然后默认用 25 个控制步（约 0.5 秒）平滑混合到
-对称 IK 周期，避免训练只覆盖“已经处在步态周期中”的状态。混合进度属于 privileged 输入，
-不会进入 student observation；可用 `--startup-steps` 调整。
+BC 在 Teacher 状态分布上学习完整位置动作。DAgger 让 Student 闭环运行，再由 Teacher 标注 Student 实际访问到的状态，以减轻分布偏移。最终评估使用 `student` 环境角色，不构建 IK reference，也不计算 phase、期望接触或 privileged observation。
 
-## 输出
+### Stage B：解除固定 gait 锚点
 
-成功运行后主要产物位于：
+这一阶段尚未实现。为了扩展到 `0.1 m/s` 和更广 command 空间，下一版应先把 IK 变为 command-conditioned reference，再逐步衰减锚点：
 
 ```text
-mjx_runs/forward_ts/
+q_target = q_stand
+         + beta * (q_ik(command, phase) - q_stand)
+         + action_scale(beta) * policy_action
+```
+
+训练时将 `beta` 从 1 逐步降到 0，同时扩大 `[vx, vy, wz]` 的采样范围。这样 IK 只负责早期探索，不永久限定最终步态。Teacher 通过后再重新蒸馏 Student，并考虑 Student PPO fine-tuning。不要直接要求当前小 residual 把固定 `0.03 m/s` gait 提升到 `0.1 m/s`。
+
+## 7. 验收标准
+
+当前 Teacher 门槛：
+
+- `mean_velocity_x >= 0.02 m/s`
+- `failure_rate <= 0.10`
+- `mean_velocity_error <= 0.06 m/s`
+- `mean_roll_pitch_rate_rms <= 0.50 rad/s`
+
+当前 Student 门槛：
+
+- `mean_velocity_x >= 0.02 m/s`
+- `failure_rate <= 0.10`
+- `mean_velocity_error <= 0.06 m/s`
+- `mean_roll_pitch_rate_rms <= 0.60 rad/s`
+
+这些只是第一阶段低速前进门槛。正式判断还要查看 `mean_forward_distance`、世界速度与 body-frame 速度差异、圆盘触地率、动作饱和和视频。单独达到平均速度不能证明 gait 可用。
+
+`--strict-acceptance` 未通过时保留产物并以退出码 2 结束。Teacher 未通过时不会继续生成示范和训练 Student。
+
+## 8. 输出与评估
+
+```text
+mjx_runs/forward_candidate_v1/
   ik_reference.npz
-  teacher/params/
   teacher/params_best/
   teacher/params_final/
   teacher/ppo_checkpoint/
@@ -83,15 +190,13 @@ mjx_runs/forward_ts/
   run_config.json
 ```
 
-`student_policy.npz` 是最终策略。其 JSON 伴随文件记录 XML、stand 来源、观测维度、action scale、网络结构和评估结果。
-
-单独重新评估 student：
+`student_policy.npz` 才是最终部署候选。单独评估：
 
 ```bash
-python -m scripts.evaluate_forward_student mjx_runs/forward_ts/student_policy.npz
+python -m scripts.evaluate_forward_student mjx_runs/forward_candidate_v1/student_policy.npz
 ```
 
-评估脚本输出中的以下字段必须为 `false`：
+评估报告必须显示：
 
 ```json
 {
@@ -100,30 +205,10 @@ python -m scripts.evaluate_forward_student mjx_runs/forward_ts/student_policy.np
 }
 ```
 
-## 验收
-
-默认门槛：
-
-- 第一阶段目标速度为 `0.03 m/s`，与当前 IK 基线的实际速度匹配；
-- student 平均前进速度不低于 `0.02 m/s`；
-- 500 control steps 内失败率不高于 `10%`；
-- 最终评估环境使用 student 完整位置动作，完全不使用 IK 目标和 teacher residual。
-
-使用 `--strict-acceptance` 时，未达门槛会保留全部产物并以退出码 2 结束，避免把“脚本运行成功”误认为“student 已经学会”。
-Teacher 会在生成示范前先执行同样的前进速度和失败率验收；teacher 未达标时不会继续蒸馏。
-PPO 训练过程中会持续保存评价分数最高的 `teacher/params_best`，训练结束后使用最佳参数而非
-最后一次参数进行验收和蒸馏。当前阶段先得到稳定慢速前进，再通过 command curriculum 提速，
-避免要求小幅 residual 把 IK 基线速度一次提高数倍。
-速度跟踪奖励的宽度也按 `0.03 m/s` 目标收紧，避免原地站立获得接近目标步态的奖励。
-PPO 开始前会先用全零 residual 单独评估 IK，输出 `stage=ik_baseline` 并保存报告；因此可以
-区分“IK 基线本身不前进”和“PPO 把一个可用基线训练坏了”。
-
-## 恢复 Teacher
-
-若云实例中断，可恢复 Brax teacher checkpoint：
+## 9. 恢复训练
 
 ```bash
-python -m scripts.train_forward_teacher_student --teacher-restore mjx_runs/forward_ts/teacher/ppo_checkpoint --out mjx_runs/forward_ts_resumed
+python -m scripts.train_forward_teacher_student --teacher-restore mjx_runs/forward_candidate_v1/teacher/ppo_checkpoint --xml-path assets/pupper_v3_disk_structure_candidate.xml --out mjx_runs/forward_candidate_v1_resumed
 ```
 
-当前 Brax checkpoint 恢复 policy、value 和 observation normalizer；是否恢复 optimizer state 取决于云端安装的 Brax 版本。
+只有 XML、关节顺序、观测、动作定义、reward、控制增益和网络结构完全一致时才允许恢复 checkpoint。任何一项发生变化都应新建 run，不能把旧 checkpoint 当成可兼容初始化。Brax 是否恢复 optimizer state 取决于云端安装版本。

@@ -19,7 +19,10 @@ except ValueError:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from disk_robot.ik_gait import FootSpaceIKGait, FootTrajectoryParams
+from disk_robot.ik_reference import IKReferenceSpec, build_ik_reference_from_model
+from disk_robot.gait_speed import MAX_CALIBRATED_FORWARD_SPEED, plan_forward_gait
 from disk_robot.model_contract import resolve_model_contract
+from disk_robot.structure_variants import StructureVariant, apply_structure_variant
 
 
 DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
@@ -36,6 +39,16 @@ def parse_args(argv=None):
     parser.add_argument("--neutral-pose", choices=("model", "pupper"), default="model")
     parser.add_argument("--frequency", type=float, default=0.8)
     parser.add_argument("--stride", type=float, default=0.04)
+    parser.add_argument(
+        "--target-speed",
+        type=float,
+        default=None,
+        metavar="M_PER_S",
+        help=(
+            "Select calibrated frequency/stride for the candidate structure; "
+            "overrides --frequency and --stride."
+        ),
+    )
     parser.add_argument("--height", type=float, default=0.025)
     parser.add_argument("--duty", type=float, default=0.72)
     parser.add_argument("--ramp", type=float, default=1.0)
@@ -44,6 +57,15 @@ def parse_args(argv=None):
     parser.add_argument("--torque-limit", type=float, default=3.0)
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--realtime", type=float, default=1.0)
+    parser.add_argument(
+        "--training-reference",
+        action="store_true",
+        help="Use the same warmed 256-sample IK lookup table as teacher training.",
+    )
+    parser.add_argument("--phase", type=float, default=0.0, help="Initial gait phase in cycles.")
+    parser.add_argument("--hip-y", type=float, default=None)
+    parser.add_argument("--leg-scale", type=float, default=1.0)
+    parser.add_argument("--disk-radius", type=float, default=None)
     parser.add_argument("--kinematic", action="store_true", help="Show joint motion with the floating base fixed.")
     parser.add_argument("--headless", action="store_true", help="Run physics and print metrics without a viewer.")
     return parser.parse_args(argv)
@@ -54,6 +76,9 @@ def _reset(model, data, contract, mujoco) -> None:
     data.qpos[contract.qpos_indices] = contract.stand_q
     data.qvel[:] = 0.0
     data.ctrl[contract.actuator_ids] = contract.stand_q
+    mujoco.mj_forward(model, data)
+    foot_bottom = data.geom_xpos[contract.foot_geom_ids, 2] - contract.foot_radii
+    data.qpos[2] += 0.001 - float(np.min(foot_bottom))
     mujoco.mj_forward(model, data)
 
 
@@ -70,14 +95,18 @@ def _peak_contact_force(model, data, mujoco) -> float:
         mujoco.mj_contactForce(model, data, contact_index, force)
         peak = max(peak, abs(float(force[0])))
     return peak
-    foot_bottom = data.geom_xpos[contract.foot_geom_ids, 2] - contract.foot_radii
-    data.qpos[2] += 0.001 - float(np.min(foot_bottom))
-    mujoco.mj_forward(model, data)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    if args.frequency <= 0.0 or args.realtime <= 0.0:
+    try:
+        speed_plan = None if args.target_speed is None else plan_forward_gait(args.target_speed)
+    except ValueError as exc:
+        raise SystemExit(f"invalid --target-speed: {exc}") from exc
+    frequency = args.frequency if speed_plan is None else speed_plan.frequency
+    stride = args.stride if speed_plan is None else speed_plan.stride_length
+    height = args.height if speed_plan is None else args.height * speed_plan.motion_scale
+    if frequency <= 0.0 or args.realtime <= 0.0:
         raise SystemExit("--frequency and --realtime must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
         raise SystemExit("--kp and --kd must be nonnegative; --torque-limit must be positive")
@@ -87,6 +116,19 @@ def main(argv=None):
     import mujoco
 
     model = mujoco.MjModel.from_xml_path(str(args.xml.resolve()))
+    current_hip_y = abs(float(model.body_pos[model.body("leg_front_r_1").id, 1]))
+    current_disk_radius = float(model.geom_size[model.geom("base_disk_collision").id, 0])
+    selected_hip_y = current_hip_y if args.hip_y is None else args.hip_y
+    selected_disk_radius = current_disk_radius if args.disk_radius is None else args.disk_radius
+    if args.hip_y is not None or args.leg_scale != 1.0 or args.disk_radius is not None:
+        apply_structure_variant(
+            model,
+            StructureVariant(
+                hip_y=selected_hip_y,
+                leg_scale=args.leg_scale,
+                disk_radius=selected_disk_radius,
+            ),
+        )
     data = mujoco.MjData(model)
     contract = resolve_model_contract(model)
     if args.neutral_pose == "pupper":
@@ -97,13 +139,26 @@ def main(argv=None):
     model.actuator_forcerange[contract.actuator_ids, 0] = -args.torque_limit
     model.actuator_forcerange[contract.actuator_ids, 1] = args.torque_limit
     params = FootTrajectoryParams(
-        frequency=args.frequency,
-        stride_length=args.stride,
-        step_height=args.height,
+        frequency=frequency,
+        stride_length=stride,
+        step_height=height,
         duty=args.duty,
         mode=args.mode,
     )
     gait = FootSpaceIKGait(model, contract, params)
+    reference = None
+    if args.training_reference:
+        reference = build_ik_reference_from_model(
+            model,
+            IKReferenceSpec(
+                samples=256,
+                frequency=frequency,
+                stride_length=stride,
+                step_height=height,
+                duty=args.duty,
+                mode=args.mode,
+            ),
+        ).joint_targets
     _reset(model, data, contract, mujoco)
     initial_base_qpos = data.qpos[:7].copy()
     control_repeat = 5
@@ -118,8 +173,15 @@ def main(argv=None):
 
     print(
         f"model={args.xml.resolve()} mode={args.mode} neutral={args.neutral_pose} kinematic={args.kinematic} "
-        f"kp={args.kp:g} kd={args.kd:g} torque_limit={args.torque_limit:g}"
+        f"kp={args.kp:g} kd={args.kd:g} torque_limit={args.torque_limit:g} "
+        f"hip_y={selected_hip_y:g} leg_scale={args.leg_scale:g} "
+        f"disk_radius={selected_disk_radius:g} frequency={frequency:g} stride={stride:g}"
     )
+    if speed_plan is not None:
+        print(
+            f"speed_plan target={speed_plan.target_speed:.4f}m/s "
+            f"calibrated_limit={MAX_CALIBRATED_FORWARD_SPEED:.4f}m/s"
+        )
     print("Space=pause; R=reset; close window=exit")
     print("Metrics are one-second averages in the torso frame.")
 
@@ -152,7 +214,16 @@ def main(argv=None):
             wall_start = time.perf_counter()
 
             if not state["paused"]:
-                target = gait.targets(sim_time)
+                if reference is None:
+                    target = gait.targets(sim_time)
+                    ik_max = np.max(gait.last_errors)
+                else:
+                    sample = ((args.phase + sim_time * frequency) % 1.0) * len(reference)
+                    lower = int(np.floor(sample))
+                    upper = (lower + 1) % len(reference)
+                    alpha = sample - np.floor(sample)
+                    target = reference[lower] + alpha * (reference[upper] - reference[lower])
+                    ik_max = float("nan")
                 blend = 1.0 if args.ramp <= 0.0 else min(1.0, sim_time / args.ramp)
                 target = contract.stand_q + blend * (target - contract.stand_q)
                 old_pos = data.xpos[contract.torso_body_id].copy()
@@ -180,14 +251,16 @@ def main(argv=None):
                 step_count += 1
 
                 torso_rot = data.xmat[contract.torso_body_id].reshape(3, 3)
-                velocity = torso_rot.T @ ((data.xpos[contract.torso_body_id] - old_pos) / control_dt)
+                world_velocity = (data.xpos[contract.torso_body_id] - old_pos) / control_dt
+                body_velocity = torso_rot.T @ world_velocity
                 angular = torso_rot.T @ data.cvel[contract.torso_body_id, :3]
                 roll, pitch = _roll_pitch(torso_rot)
                 tracking_rmse = float(np.sqrt(np.mean(np.square(target - data.qpos[contract.qpos_indices]))))
                 interval.append(
                     (
-                        velocity[0],
-                        velocity[1],
+                        world_velocity[0],
+                        body_velocity[0],
+                        body_velocity[1],
                         angular[2],
                         torso_rot[2, 2],
                         tracking_rmse,
@@ -200,11 +273,13 @@ def main(argv=None):
                 if step_count % max(1, round(1.0 / control_dt)) == 0:
                     mean = np.mean(np.asarray(interval), axis=0)
                     print(
-                        f"t={step_count * control_dt:6.2f}s  vx={mean[0]: .3f}  vy={mean[1]: .3f}  "
-                        f"wz={mean[2]: .3f}  upright={mean[3]:.3f}  track={mean[4]:.3f}  "
-                        f"sat={100.0 * mean[5]:4.1f}%  rp={np.degrees(np.sqrt(mean[6])):4.1f}deg  "
-                        f"wxy={np.sqrt(mean[7]):.3f}  impact={mean[8]:.1f}N  "
-                        f"ik_max={np.max(gait.last_errors):.5f}"
+                        f"t={step_count * control_dt:6.2f}s  vx_world={mean[0]: .3f}  "
+                        f"vx_body={mean[1]: .3f}  vy_body={mean[2]: .3f}  "
+                        f"dx={data.qpos[0] - initial_base_qpos[0]: .3f}  wz={mean[3]: .3f}  "
+                        f"upright={mean[4]:.3f}  track={mean[5]:.3f}  "
+                        f"sat={100.0 * mean[6]:4.1f}%  rp={np.degrees(np.sqrt(mean[7])):4.1f}deg  "
+                        f"wxy={np.sqrt(mean[8]):.3f}  impact={mean[9]:.1f}N  "
+                        f"ik_max={ik_max:.5f}"
                     )
                     interval.clear()
 

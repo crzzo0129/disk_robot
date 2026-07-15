@@ -71,6 +71,31 @@ def test_step_target_smoothly_transitions_after_delay():
     assert step_target_alpha(10.0, switch_time=0.5, transition_time=2.0) == 1.0
 
 
+def test_smootherstep_has_symmetric_midpoint_and_flat_ends():
+    from scripts.simulate_extreme_disk_pose import smootherstep
+
+    assert smootherstep(0.0) == 0.0
+    assert smootherstep(0.5) == 0.5
+    assert smootherstep(1.0) == 1.0
+
+
+def test_partial_push_target_uses_only_requested_excursion():
+    from scripts.simulate_extreme_disk_pose import partial_push_target
+
+    assert partial_push_target([0.0, 1.0], [2.0, -1.0], 0.4) == [0.8, 0.19999999999999996]
+
+
+def test_tangential_push_is_symmetric_and_keeps_front_legs_folded():
+    from scripts.simulate_extreme_disk_pose import tangential_rear_push_target
+
+    folded = [-0.251, 0.0, 0.88, 0.251, 0.0, -0.88, -1.6, 0.0, 0.88, 1.6, 0.0, -0.88]
+    target = tangential_rear_push_target(folded)
+
+    assert target[:6] == folded[:6]
+    assert target[6:9] == [-1.4, 0.0, 0.05]
+    assert target[9:12] == [1.4, 0.0, -0.05]
+
+
 def test_rear_push_roll_target_folds_before_pushing():
     from scripts.simulate_extreme_disk_pose import rear_push_roll_target
 
@@ -121,10 +146,14 @@ def test_rear_push_roll_preset_selects_motion_and_runtime_strength():
     assert args.switch_time == 0.5
     assert args.front_fold_time == 0.18
     assert args.rear_fold_time == 0.55
-    assert args.folded_hold_time == 0.1
-    assert args.walk_to_stand_time == 0.2
-    assert args.stand_hold_time == 0.15
-    assert args.stand_to_folded_time == 0.18
+    assert args.folded_hold_time == 0.3
+    assert args.walk_to_stand_time == 0.28
+    assert args.stand_hold_time == 0.04
+    assert args.stand_to_folded_time == 0.14
+    assert args.push_style == "tangent"
+    assert args.push_scale == 1.0
+    assert args.push_trigger_speed == 0.3
+    assert args.push_trigger_timeout == 2.0
     assert args.kp == 60.0
     assert args.kd == 1.0
     assert args.force_limit == 6.0

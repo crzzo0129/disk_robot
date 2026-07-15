@@ -60,6 +60,7 @@ def main(argv=None):
     denominator = max(float(np.sum(alive)), 1.0)
     report = {
         "mean_velocity_x": float(np.sum(vx * alive) / denominator),
+        "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
         "mean_velocity_error": float(np.sum(velocity_error * alive) / denominator),
         "mean_roll_pitch_rate_rms": float(np.sum(roll_pitch_rate * alive) / denominator),
         "failure_rate": float(np.mean(np.max(failed, axis=0))),

@@ -30,3 +30,18 @@ def test_teacher_student_observation_contract_is_explicit():
     assert config.teacher_observation_size == 227
     assert len(config.student_action_scale) == 12
     assert len(config.residual_scale) == 12
+
+
+def test_reference_can_be_built_from_an_in_memory_structure_variant():
+    import mujoco
+
+    from disk_robot.ik_reference import IKReferenceSpec, build_ik_reference_from_model
+    from disk_robot.structure_variants import StructureVariant, apply_structure_variant
+    from disk_robot.walk_env import DEFAULT_XML
+
+    model = mujoco.MjModel.from_xml_path(str(DEFAULT_XML))
+    apply_structure_variant(model, StructureVariant(hip_y=0.085, leg_scale=0.85))
+    reference = build_ik_reference_from_model(model, IKReferenceSpec(samples=16))
+
+    assert reference.joint_targets.shape == (16, 12)
+    assert np.all(np.isfinite(reference.joint_targets))

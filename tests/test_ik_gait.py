@@ -44,3 +44,42 @@ def test_ik_tracks_reachable_foot_trajectory_on_target_model():
         targets = gait.targets(float(t))
         assert np.all(np.isfinite(targets))
         assert np.max(gait.last_errors) < 2e-3
+
+
+def test_viewer_reset_grounds_the_training_model():
+    source = open("scripts/view_ik_gait.py", encoding="utf-8").read()
+
+    reset_block = source.split("def _reset", 1)[1].split("def _roll_pitch", 1)[0]
+    assert "foot_bottom" in reset_block
+    assert "data.qpos[2]" in reset_block
+
+
+def test_viewer_can_use_the_training_reference_table():
+    from scripts.view_ik_gait import parse_args
+
+    args = parse_args(["--training-reference", "--mode", "trot", "--phase", "0.25"])
+
+    assert args.training_reference
+    assert args.mode == "trot"
+    assert args.phase == 0.25
+
+
+def test_forward_speed_plan_interpolates_candidate_calibration():
+    from disk_robot.gait_speed import plan_forward_gait
+
+    slow = plan_forward_gait(0.0353)
+    fast = plan_forward_gait(0.08)
+
+    assert slow.frequency == 1.2
+    assert slow.stride_length == 0.04
+    assert 0.07 < fast.stride_length < 0.08
+    assert plan_forward_gait(0.0).motion_scale == 0.0
+    assert plan_forward_gait(0.1).stride_length == 0.09
+
+
+def test_viewer_accepts_target_speed_shortcut():
+    from scripts.view_ik_gait import parse_args
+
+    args = parse_args(["--target-speed", "0.08"])
+
+    assert args.target_speed == 0.08

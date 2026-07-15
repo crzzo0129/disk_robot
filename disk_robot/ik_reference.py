@@ -42,9 +42,16 @@ def build_ik_reference(xml_path: str | Path, spec: IKReferenceSpec | None = None
     import mujoco
 
     spec = spec or IKReferenceSpec()
+    model = mujoco.MjModel.from_xml_path(str(Path(xml_path).expanduser().resolve()))
+    return build_ik_reference_from_model(model, spec)
+
+
+def build_ik_reference_from_model(model, spec: IKReferenceSpec | None = None) -> IKReferenceTable:
+    """Builds an IK cycle from a compiled model, including in-memory structure variants."""
+
+    spec = spec or IKReferenceSpec()
     if spec.samples < 8:
         raise ValueError("IK reference requires at least 8 samples")
-    model = mujoco.MjModel.from_xml_path(str(Path(xml_path).expanduser().resolve()))
     contract = resolve_model_contract(model)
     gait = FootSpaceIKGait(model, contract, spec.trajectory_params())
 
@@ -84,5 +91,6 @@ __all__ = [
     "IKReferenceSpec",
     "IKReferenceTable",
     "build_ik_reference",
+    "build_ik_reference_from_model",
     "interpolate_reference_jax",
 ]

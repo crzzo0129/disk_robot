@@ -19,8 +19,8 @@ def test_pipeline_smoke_and_stand_defaults_are_explicit():
     assert args.command_vx == 0.08
     assert args.ik_frequency == 0.8
     assert args.ik_stride == 0.04
-    assert args.kp == 7.5
-    assert args.kd == 0.25
+    assert args.kp == 10.0
+    assert args.kd == 0.4
     assert args.startup_steps == 25
     assert args.teacher_batch_size == 256
     assert args.teacher_minibatches == 32
@@ -35,6 +35,10 @@ def test_pipeline_defaults_match_the_stable_ik_baseline():
     assert args.command_vx == 0.03
     assert args.min_accepted_teacher_vx == 0.02
     assert args.min_accepted_vx == 0.02
+    assert args.max_accepted_teacher_velocity_error == 0.06
+    assert args.max_accepted_teacher_roll_pitch_rate == 0.50
+    assert args.max_accepted_velocity_error == 0.06
+    assert args.max_accepted_roll_pitch_rate == 0.60
     assert args.teacher_learning_rate == 1e-4
     assert args.teacher_entropy_cost == 1e-3
     assert ForwardTeacherStudentConfig().velocity_sigma == 0.0004
@@ -48,6 +52,8 @@ def test_teacher_env_has_privileged_residual_and_student_modes():
     assert 'state.info["teacher_obs"]' not in source
     assert "teacher_action_to_student_action" in source
     assert "target_ctrl = self.stand_q + self.student_action_scale * student_action" in source
+    assert "forward_velocity = world_velocity[0]" in source
+    assert '"body_velocity_x": body_velocity[0]' in source
     assert 'if self.role == "student"' in source
     assert "self._blended_ik_target" in source
 
@@ -62,6 +68,7 @@ def test_pipeline_produces_student_policy_and_evaluation_contract():
     assert "policy_params_fn" in source
     assert 'teacher_dir / "params_best"' in source
     assert 'teacher_dir / "ik_baseline_evaluation.json"' in source
+    assert '"mean_forward_distance"' in source
     assert 'make_forward_teacher_student_env(\n        "dagger"' in source
     assert 'make_forward_teacher_student_env(\n        "student"' in source
 

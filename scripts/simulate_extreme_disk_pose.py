@@ -23,6 +23,7 @@ class PlaybackState:
     def __init__(self):
         self.paused = False
         self.switched = False
+        self.push_start_time = None
         self._lock = threading.Lock()
         self._commands = []
 
@@ -63,6 +64,23 @@ def parse_args(argv=None):
     parser.add_argument("--kp", type=float, help="Optional runtime position gain override.")
     parser.add_argument("--kd", type=float, help="Optional runtime velocity gain override.")
     parser.add_argument("--force-limit", type=float, help="Optional symmetric runtime actuator force limit.")
+    parser.add_argument(
+        "--push-scale",
+        type=float,
+        help="Fraction of the selected rear-leg push excursion to use (rear-push-roll only).",
+    )
+    parser.add_argument(
+        "--push-style",
+        choices=("tangent", "keyframe"),
+        default="tangent",
+        help="Use a near-horizontal rear-foot path or the legacy rear_push keyframe.",
+    )
+    parser.add_argument(
+        "--push-trigger-speed",
+        type=float,
+        help="Minimum forward body speed before the rear push starts; <=0 disables phase gating.",
+    )
+    parser.add_argument("--push-trigger-timeout", type=float, help="Maximum extra seconds to wait for the push phase.")
     parser.add_argument("--headless", action="store_true", help="Run without the interactive viewer.")
     parser.add_argument("--steps", type=int, default=1000, help="Simulation steps for --headless.")
     parser.add_argument("--status-interval", type=float, default=3, help="Seconds between status prints.")
@@ -79,10 +97,15 @@ def parse_args(argv=None):
         args.switch_time = 0.5 if args.switch_time is None else args.switch_time
         args.front_fold_time = 0.18 if args.front_fold_time is None else args.front_fold_time
         args.rear_fold_time = 0.55 if args.rear_fold_time is None else args.rear_fold_time
-        args.folded_hold_time = 0.1 if args.folded_hold_time is None else args.folded_hold_time
-        args.walk_to_stand_time = 0.2 if args.walk_to_stand_time is None else args.walk_to_stand_time
-        args.stand_hold_time = 0.15 if args.stand_hold_time is None else args.stand_hold_time
-        args.stand_to_folded_time = 0.18 if args.stand_to_folded_time is None else args.stand_to_folded_time
+        # The fold excites a large backward roll. This is only a minimum hold;
+        # phase gating below waits for the first sufficiently fast forward return.
+        args.folded_hold_time = 0.3 if args.folded_hold_time is None else args.folded_hold_time
+        args.walk_to_stand_time = 0.28 if args.walk_to_stand_time is None else args.walk_to_stand_time
+        args.stand_hold_time = 0.04 if args.stand_hold_time is None else args.stand_hold_time
+        args.stand_to_folded_time = 0.14 if args.stand_to_folded_time is None else args.stand_to_folded_time
+        args.push_scale = 1.0 if args.push_scale is None else args.push_scale
+        args.push_trigger_speed = 0.3 if args.push_trigger_speed is None else args.push_trigger_speed
+        args.push_trigger_timeout = 2.0 if args.push_trigger_timeout is None else args.push_trigger_timeout
         args.kp = 60.0 if args.kp is None else args.kp
         args.kd = 1.0 if args.kd is None else args.kd
         args.force_limit = 6.0 if args.force_limit is None else args.force_limit
@@ -106,6 +129,8 @@ def parse_args(argv=None):
     args.switch_time = 0.5 if args.switch_time is None else args.switch_time
     args.stand_hold_time = 0.5 if args.stand_hold_time is None else args.stand_hold_time
     args.stand_to_folded_time = 2.0 if args.stand_to_folded_time is None else args.stand_to_folded_time
+    if args.push_scale is not None and not 0.0 <= args.push_scale <= 1.0:
+        parser.error("--push-scale must be between 0 and 1")
     return args
 
 
@@ -129,6 +154,28 @@ def transition_alpha(elapsed, duration):
     if duration <= 0.0:
         return 1.0
     return min(max(elapsed / duration, 0.0), 1.0)
+
+
+def smootherstep(alpha):
+    """Map [0, 1] to [0, 1] with zero velocity and acceleration at both ends."""
+    alpha = min(max(float(alpha), 0.0), 1.0)
+    return alpha * alpha * alpha * (alpha * (alpha * 6.0 - 15.0) + 10.0)
+
+
+def partial_push_target(folded_ctrl, rear_push_ctrl, push_scale, ranges=None):
+    return lerp_sequence(folded_ctrl, rear_push_ctrl, push_scale, ranges)
+
+
+def tangential_rear_push_target(folded_ctrl, push_scale=1.0, ranges=None):
+    """Move both rear feet backward with almost no vertical endpoint displacement."""
+    if len(folded_ctrl) != 12:
+        raise ValueError("The tangential Pupper push expects 12 actuator targets")
+    full_push = list(folded_ctrl)
+    # Values were selected from the compiled Pupper kinematics. Relative to the
+    # folded pose, each rear foot moves about 78 mm backward and <0.1 mm vertically.
+    full_push[6:9] = [-1.4, 0.0, 0.05]
+    full_push[9:12] = [1.4, 0.0, -0.05]
+    return partial_push_target(folded_ctrl, full_push, push_scale, ranges)
 
 
 def staged_target(sim_time, switch_time, walk_to_stand_time, stand_hold_time, stand_to_folded_time):
@@ -187,12 +234,28 @@ def step_target_alpha(sim_time, switch_time, transition_time):
     return transition_alpha(sim_time - switch_time, transition_time)
 
 
-def format_status_line(sim_time, stage, alpha, torso_x, torso_y, torso_z, contact_count, disk_contact_count):
-    return (
+def format_status_line(
+    sim_time,
+    stage,
+    alpha,
+    torso_x,
+    torso_y,
+    torso_z,
+    contact_count,
+    disk_contact_count,
+    velocity_x=None,
+    velocity_z=None,
+    angular_velocity_y=None,
+    saturation_fraction=None,
+):
+    line = (
         f"t={sim_time:.2f} stage={stage} alpha={alpha:.2f} "
         f"x={torso_x:.3f} y={torso_y:.3f} z={torso_z:.3f} "
         f"contacts={contact_count} disk_contacts={disk_contact_count}"
     )
+    if velocity_x is not None:
+        line += f" vx={velocity_x:.3f} vz={velocity_z:.3f} wy={angular_velocity_y:.3f} sat={saturation_fraction:.2f}"
+    return line
 
 
 def _keyframe_id(mujoco, model, name):
@@ -233,8 +296,16 @@ def _disk_contact_count(data, disk_geom_id):
     return total
 
 
-def _status_line(data, torso_id, disk_geom_id, stage, alpha):
+def _status_line(model, data, torso_id, disk_geom_id, stage, alpha):
     torso_pos = data.xpos[torso_id]
+    velocity = data.cvel[torso_id]
+    limits = model.actuator_forcerange[:, 1]
+    saturated = sum(
+        abs(float(force)) >= 0.99 * abs(float(limit))
+        for force, limit in zip(data.actuator_force, limits)
+        if limit > 0.0
+    )
+    limited_count = sum(float(limit) > 0.0 for limit in limits)
     return format_status_line(
         sim_time=float(data.time),
         stage=stage,
@@ -244,6 +315,10 @@ def _status_line(data, torso_id, disk_geom_id, stage, alpha):
         torso_z=float(torso_pos[2]),
         contact_count=int(data.ncon),
         disk_contact_count=_disk_contact_count(data, disk_geom_id),
+        velocity_x=float(velocity[3]),
+        velocity_z=float(velocity[5]),
+        angular_velocity_y=float(velocity[1]),
+        saturation_fraction=saturated / max(limited_count, 1),
     )
 
 
@@ -271,12 +346,17 @@ def main(argv=None):
     to_ctrl = _keyframe_ctrl(model, to_id)
     front_fold_ctrl = to_ctrl[:6] + from_ctrl[6:]
     ctrl_ranges = _control_ranges(model)
+    if args.push_style == "tangent":
+        push_ctrl = tangential_rear_push_target(to_ctrl, args.push_scale or 0.0, ctrl_ranges)
+    else:
+        push_ctrl = partial_push_target(to_ctrl, middle_ctrl, args.push_scale or 0.0, ctrl_ranges)
     torso_id = _body_id(mujoco, model, args.track_body)
     disk_geom_id = _geom_id(mujoco, model, args.disk_geom)
     state = PlaybackState()
 
     def reset_simulation():
         state.switched = False
+        state.push_start_time = None
         mujoco.mj_resetDataKeyframe(model, data, from_id)
         data.ctrl[:] = from_ctrl
         mujoco.mj_forward(model, data)
@@ -291,11 +371,11 @@ def main(argv=None):
             elif stage == "folded_hold":
                 data.ctrl[:] = to_ctrl
             elif stage == "folded_to_push":
-                data.ctrl[:] = lerp_sequence(to_ctrl, middle_ctrl, alpha, ctrl_ranges)
+                data.ctrl[:] = lerp_sequence(to_ctrl, push_ctrl, smootherstep(alpha), ctrl_ranges)
             elif stage == "push_hold":
-                data.ctrl[:] = middle_ctrl
+                data.ctrl[:] = push_ctrl
             elif stage == "push_to_folded":
-                data.ctrl[:] = lerp_sequence(middle_ctrl, to_ctrl, alpha, ctrl_ranges)
+                data.ctrl[:] = lerp_sequence(push_ctrl, to_ctrl, smootherstep(alpha), ctrl_ranges)
             elif stage == "walk_to_stand":
                 data.ctrl[:] = lerp_sequence(from_ctrl, middle_ctrl, alpha, ctrl_ranges)
             elif stage in ("stand_hold", "stand_to_folded"):
@@ -311,12 +391,45 @@ def main(argv=None):
 
     def current_target():
         if args.motion == "rear-push-roll":
+            nominal_push_start = (
+                args.switch_time
+                + max(args.front_fold_time, 0.0)
+                + max(args.rear_fold_time, 0.0)
+                + max(args.folded_hold_time, 0.0)
+            )
+            if data.time >= nominal_push_start and state.push_start_time is None:
+                velocity = data.cvel[torso_id]
+                disk_grounded = _disk_contact_count(data, disk_geom_id) > 0
+                phase_ready = (
+                    args.push_trigger_speed <= 0.0
+                    or (
+                        float(velocity[3]) >= args.push_trigger_speed
+                        and abs(float(velocity[5])) <= 0.08
+                        and disk_grounded
+                    )
+                )
+                timed_out = data.time >= nominal_push_start + max(args.push_trigger_timeout, 0.0)
+                if phase_ready or timed_out:
+                    state.push_start_time = float(data.time)
+                    reason = "phase_ready" if phase_ready else "timeout"
+                    print(
+                        f"push_trigger={reason} t={data.time:.3f} "
+                        f"vx={velocity[3]:.3f} vz={velocity[5]:.3f} disk_grounded={disk_grounded}",
+                        flush=True,
+                    )
+                else:
+                    return "folded_wait", 0.0
+
+            effective_hold_time = args.folded_hold_time
+            if state.push_start_time is not None:
+                rear_fold_end = args.switch_time + max(args.front_fold_time, 0.0) + max(args.rear_fold_time, 0.0)
+                effective_hold_time = max(state.push_start_time - rear_fold_end, 0.0)
             return rear_push_roll_target(
                 data.time,
                 args.switch_time,
                 args.front_fold_time,
                 args.rear_fold_time,
-                args.folded_hold_time,
+                effective_hold_time,
                 args.walk_to_stand_time,
                 args.stand_hold_time,
                 args.stand_to_folded_time,
@@ -373,6 +486,9 @@ def main(argv=None):
             f"folded_to_push_time={args.walk_to_stand_time:.3f}s "
             f"push_hold_time={args.stand_hold_time:.3f}s "
             f"push_to_folded_time={args.stand_to_folded_time:.3f}s; "
+            f"push_style={args.push_style} push_scale={args.push_scale:.3f}; "
+            f"push_trigger_speed={args.push_trigger_speed:.3f}m/s "
+            f"push_trigger_timeout={args.push_trigger_timeout:.3f}s; "
             "the folded target stays fixed while the robot rolls.",
             flush=True,
         )
@@ -393,9 +509,9 @@ def main(argv=None):
         for _ in range(max(args.steps, 0)):
             stage, alpha = step_physics()
             if data.time - last_status_time >= args.status_interval:
-                print(_status_line(data, torso_id, disk_geom_id, stage, alpha), flush=True)
+                print(_status_line(model, data, torso_id, disk_geom_id, stage, alpha), flush=True)
                 last_status_time = data.time
-        print(_status_line(data, torso_id, disk_geom_id, stage, alpha), flush=True)
+        print(_status_line(model, data, torso_id, disk_geom_id, stage, alpha), flush=True)
         return
 
     print(KEY_HELP.strip(), flush=True)
@@ -414,7 +530,7 @@ def main(argv=None):
                 stage, alpha = step_physics()
                 window.cam.lookat[:] = data.xpos[torso_id]
                 if data.time - last_status_time >= args.status_interval:
-                    print(_status_line(data, torso_id, disk_geom_id, stage, alpha), flush=True)
+                    print(_status_line(model, data, torso_id, disk_geom_id, stage, alpha), flush=True)
                     last_status_time = data.time
             window.sync()
             time.sleep(model.opt.timestep)

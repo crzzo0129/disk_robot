@@ -80,7 +80,7 @@
     <worldbody>
         <body name="base_link" pos="0 0 0.13" gravcomp="0">
             <!-- Keep the measured Pupper mass, but approximate its inertia as the enlarged disk. -->
-            <inertial pos="0 0 0.015" mass="1.506" diaginertia="0.03012 0.0158632 0.0158632" />
+            <inertial pos="0 0 0.015" mass="1.506" diaginertia="0.0158632 0.03012 0.0158632" />
             <freejoint name="world_to_body" />
             <geom name="base_disk_collision" type="cylinder" size="0.20 0.04" quat="0.7071068 0.7071068 0 0" pos="0 0 0.015" class="collision" />
             <geom name="base_disk_visual" type="cylinder" size="0.20 0.04" quat="0.7071068 0.7071068 0 0" pos="0 0 0.015" rgba="0.1 0.45 0.85 1" contype="0" conaffinity="0" group="1" density="0" />

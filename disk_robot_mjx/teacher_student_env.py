@@ -8,7 +8,7 @@ from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_structure_candidate.xml"
 
 
 def make_forward_teacher_student_env(
@@ -243,11 +243,15 @@ def make_forward_teacher_student_env(
             done = jp.maximum(state.done, (failed_bool | timeout_bool).astype(jp.float32))
             failed = failed_bool.astype(jp.float32)
 
-            velocity_error = body_velocity[0] - self.config.command_vx
+            forward_velocity = world_velocity[0]
+            velocity_error = forward_velocity - self.config.command_vx
             reward_terms = {
                 "velocity": self.config.reward_velocity
-                * jp.exp(-(velocity_error * velocity_error + body_velocity[1] ** 2) / self.config.velocity_sigma),
-                "progress": self.config.reward_progress * jp.clip(body_velocity[0], -0.3, 0.3),
+                * jp.exp(
+                    -(velocity_error * velocity_error + world_velocity[1] ** 2)
+                    / self.config.velocity_sigma
+                ),
+                "progress": self.config.reward_progress * jp.clip(forward_velocity, -0.3, 0.3),
                 "yaw": self.config.reward_yaw
                 * jp.exp(-(body_angular_velocity[2] ** 2) / self.config.yaw_sigma),
                 "alive": self.config.reward_alive,
@@ -303,8 +307,10 @@ def make_forward_teacher_student_env(
             metrics = {
                 "reward": reward,
                 **{f"reward_{name}": value for name, value in reward_terms.items()},
-                "velocity_x": body_velocity[0],
-                "velocity_y": body_velocity[1],
+                "velocity_x": forward_velocity,
+                "velocity_y": world_velocity[1],
+                "body_velocity_x": body_velocity[0],
+                "body_velocity_y": body_velocity[1],
                 "yaw_rate": body_angular_velocity[2],
                 "velocity_error": jp.abs(velocity_error),
                 "roll_pitch_rate_rms": jp.sqrt(jp.mean(jp.square(body_angular_velocity[:2]))),
@@ -418,6 +424,8 @@ def make_forward_teacher_student_env(
                 "reward",
                 "velocity_x",
                 "velocity_y",
+                "body_velocity_x",
+                "body_velocity_y",
                 "yaw_rate",
                 "velocity_error",
                 "roll_pitch_rate_rms",
