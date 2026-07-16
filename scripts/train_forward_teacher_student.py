@@ -430,6 +430,7 @@ def _collect_teacher_dataset(
     env_count,
     horizon,
     requested_samples,
+    student_observation_key="student_obs",
 ):
     reset_batch = jax.jit(jax.vmap(env.reset))
     step_batch = jax.jit(jax.vmap(env.step))
@@ -451,7 +452,7 @@ def _collect_teacher_dataset(
             valid = 1.0 - current_state.done
             next_state = step_batch(current_state, residual_action)
             return (next_state, policy_key), (
-                current_state.info["student_obs"],
+                current_state.info[student_observation_key],
                 student_label,
                 valid,
             )

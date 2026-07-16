@@ -44,6 +44,11 @@ def parse_args(argv=None):
     parser.add_argument("--student-learning-rate", type=float, default=3e-4)
     parser.add_argument("--eval-envs", type=int, default=256)
     parser.add_argument("--save-dataset", action="store_true")
+    parser.add_argument(
+        "--phase-conditioned",
+        action="store_true",
+        help="Append controller-owned sin/cos phase and startup blend to the Student observation.",
+    )
 
     parser.add_argument("--nominal-vx-tolerance", type=float, default=0.015)
     parser.add_argument("--nominal-failure-tolerance", type=float, default=0.05)
@@ -244,11 +249,38 @@ def main(argv=None):
     if not config.disturbance_enabled:
         raise SystemExit("T3 requires a T2 Teacher trained with disturbances enabled")
     reference_spec = _reference_spec_from_teacher_run(teacher_run_config)
+    if args.phase_conditioned:
+        config = replace(
+            config,
+            student_phase_conditioned=True,
+            student_phase_frequency=reference_spec.frequency,
+        )
+    stage_name = "T5_PHASE_BC" if args.phase_conditioned else "T3_BC"
+    terminal_stage = "t5" if args.phase_conditioned else "t3"
+    train_stage = "student_phase_bc" if args.phase_conditioned else "student_bc"
+    dataset_name = (
+        "student_phase_bc_dataset.npz"
+        if args.phase_conditioned
+        else "student_bc_dataset.npz"
+    )
+    policy_name = (
+        "student_policy_phase_bc.npz"
+        if args.phase_conditioned
+        else "student_policy_bc.npz"
+    )
+    student_observation_key = (
+        "student_policy_obs" if args.phase_conditioned else "student_obs"
+    )
     xml_path = _resolve_xml_path(teacher_run_config, args.xml_path)
     if not xml_path.exists():
         raise SystemExit(f"robot XML does not exist: {xml_path}")
     if args.out is None:
-        args.out = teacher_run.parent / f"student_t3_bc_seed{args.seed}"
+        default_name = (
+            f"student_t5_phase_bc_seed{args.seed}"
+            if args.phase_conditioned
+            else f"student_t3_bc_seed{args.seed}"
+        )
+        args.out = teacher_run.parent / default_name
     args.out = args.out.expanduser().resolve()
 
     if args.smoke:
@@ -274,7 +306,7 @@ def main(argv=None):
         from brax.training.agents.ppo import networks as ppo_networks
     except ImportError as exc:
         raise SystemExit(
-            "T3 could not import the MJX stack: "
+            f"{terminal_stage.upper()} could not import the MJX stack: "
             f"{exc.name or exc}. Activate the offline mjx312 environment with jax, mujoco, "
             "brax, and optax installed."
         ) from exc
@@ -310,8 +342,11 @@ def main(argv=None):
     teacher_params = model_io.load_params(params_path)
     teacher_policy = make_teacher_policy(teacher_params, deterministic=True)
     print(
-        f"stage=t3_teacher status=loaded source=ppo step={int(teacher_evaluation['selected_step']):,} "
-        f"obs={disturbed_teacher_env.observation_size} action={disturbed_teacher_env.action_size} "
+        f"stage={terminal_stage}_teacher status=loaded source=ppo "
+        f"step={int(teacher_evaluation['selected_step']):,} "
+        f"teacher_obs={disturbed_teacher_env.observation_size} "
+        f"student_obs={config.student_policy_observation_size} "
+        f"action={disturbed_teacher_env.action_size} "
         f"params={params_path}",
         flush=True,
     )
@@ -320,11 +355,16 @@ def main(argv=None):
     nominal_samples = min(max(nominal_samples, 1), args.dataset_samples - 1)
     disturbed_samples = args.dataset_samples - nominal_samples
     print(
-        f"stage=t3_dataset_plan total={args.dataset_samples:,} nominal={nominal_samples:,} "
-        f"disturbed={disturbed_samples:,} envs={args.rollout_envs} horizon={args.rollout_horizon}",
+        f"stage={terminal_stage}_dataset_plan total={args.dataset_samples:,} "
+        f"nominal={nominal_samples:,} disturbed={disturbed_samples:,} "
+        f"envs={args.rollout_envs} horizon={args.rollout_horizon} "
+        f"phase_conditioned={args.phase_conditioned}",
         flush=True,
     )
-    print("stage=t3_dataset source=nominal status=collecting", flush=True)
+    print(
+        f"stage={terminal_stage}_dataset source=nominal status=collecting",
+        flush=True,
+    )
     nominal_obs, nominal_labels = _collect_teacher_dataset(
         jax,
         jp,
@@ -334,8 +374,12 @@ def main(argv=None):
         args.rollout_envs,
         args.rollout_horizon,
         nominal_samples,
+        student_observation_key,
     )
-    print("stage=t3_dataset source=disturbed status=collecting", flush=True)
+    print(
+        f"stage={terminal_stage}_dataset source=disturbed status=collecting",
+        flush=True,
+    )
     disturbed_obs, disturbed_labels = _collect_teacher_dataset(
         jax,
         jp,
@@ -345,6 +389,7 @@ def main(argv=None):
         args.rollout_envs,
         args.rollout_horizon,
         disturbed_samples,
+        student_observation_key,
     )
     observations = np.concatenate((nominal_obs, disturbed_obs)).astype(np.float32)
     labels = np.concatenate((nominal_labels, disturbed_labels)).astype(np.float32)
@@ -354,7 +399,11 @@ def main(argv=None):
     obs_mean = jp.asarray(np.mean(observations, axis=0).astype(np.float32))
     obs_std = jp.asarray(np.maximum(np.std(observations, axis=0), 1e-3).astype(np.float32))
 
-    layer_sizes = [config.student_observation_size, *args.student_hidden, config.action_size]
+    layer_sizes = [
+        config.student_policy_observation_size,
+        *args.student_hidden,
+        config.action_size,
+    ]
     student_params = _student_init(
         jax, jp, jax.random.PRNGKey(args.seed + 60_000), layer_sizes
     )
@@ -371,11 +420,11 @@ def main(argv=None):
         args.student_batch_size,
         args.student_learning_rate,
         args.seed + 70_000,
-        "student_bc",
+        train_stage,
     )
     if args.save_dataset:
         np.savez_compressed(
-            args.out / "student_bc_dataset.npz",
+            args.out / dataset_name,
             observations=observations,
             actions=labels,
             nominal_samples=np.asarray(nominal_samples),
@@ -413,7 +462,7 @@ def main(argv=None):
     gate = _bc_acceptance(nominal_report, disturbed_report, teacher_evaluation, args)
     report = {
         **gate,
-        "stage": "T3_BC",
+        "stage": stage_name,
         "teacher_run": str(teacher_run),
         "teacher_selected_step": int(teacher_evaluation["selected_step"]),
         "dataset_samples": int(args.dataset_samples),
@@ -426,15 +475,31 @@ def main(argv=None):
     }
     metadata = {
         "format": "disk_robot_student_mlp_v1",
-        "stage": "T3_BC",
+        "stage": stage_name,
         "xml_path": str(xml_path),
         "stand_source": "xml:keyframe:stand",
-        "observation_size": config.student_observation_size,
+        "observation_size": config.student_policy_observation_size,
+        "sensor_history_size": config.student_observation_size,
+        "internal_state_size": config.student_internal_state_size,
+        "observation_contract": (
+            "192 sensor-history values followed by sin_phase, cos_phase, gait_blend"
+            if args.phase_conditioned
+            else "192 sensor-history values"
+        ),
         "action_size": config.action_size,
         "hidden_layers": args.student_hidden,
         "action_semantics": "q_target = q_stand + student_action_scale * tanh(policy)",
         "student_action_scale": list(config.student_action_scale),
         "command": [config.command_vx, 0.0, 0.0],
+        "internal_oscillator": {
+            "enabled": args.phase_conditioned,
+            "frequency_hz": config.student_phase_frequency,
+            "observation": ["sin_phase", "cos_phase", "gait_blend"]
+            if args.phase_conditioned
+            else [],
+            "requires_foot_contact": False,
+            "requires_ik_at_runtime": False,
+        },
         "config": asdict(config),
         "ik_reference": asdict(reference_spec),
         "ik_reference_source": teacher_run_config.get("ik_reference_source", {}),
@@ -444,7 +509,7 @@ def main(argv=None):
         "teacher_selection": selection,
         "evaluation": report,
     }
-    student_path = args.out / "student_policy_bc.npz"
+    student_path = args.out / policy_name
     _save_student_policy(student_path, student_params, obs_mean, obs_std, metadata)
     (args.out / "evaluation.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"
@@ -465,16 +530,22 @@ def main(argv=None):
         json.dumps(run_record, indent=2), encoding="utf-8"
     )
 
-    _print_evaluation_summary("student_bc_result", nominal_report, "nominal")
-    _print_evaluation_summary("student_bc_result", disturbed_report, "disturbed")
+    _print_evaluation_summary(f"{train_stage}_result", nominal_report, "nominal")
+    _print_evaluation_summary(f"{train_stage}_result", disturbed_report, "disturbed")
     _print_retention(
-        "nominal", nominal_report, teacher_evaluation["nominal_evaluation"]
+        "nominal",
+        nominal_report,
+        teacher_evaluation["nominal_evaluation"],
+        f"{train_stage}_retention",
     )
     _print_retention(
-        "disturbed", disturbed_report, teacher_evaluation["disturbed_evaluation"]
+        "disturbed",
+        disturbed_report,
+        teacher_evaluation["disturbed_evaluation"],
+        f"{train_stage}_retention",
     )
     print(
-        f"stage=t3_acceptance accepted={gate['accepted']} "
+        f"stage={terminal_stage}_acceptance accepted={gate['accepted']} "
         f"nominal_preserved={gate['nominal_preserved']} "
         f"disturbed_preserved={gate['disturbed_preserved']} "
         f"policy={student_path} report={args.out / 'evaluation.json'}",

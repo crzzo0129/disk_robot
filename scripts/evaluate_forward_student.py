@@ -67,6 +67,11 @@ def main(argv=None):
         "mean_alive_steps": float(np.mean(np.sum(alive, axis=0))),
         "ik_runtime_enabled": False,
         "teacher_observation_enabled": False,
+        "internal_phase_enabled": bool(config.student_phase_conditioned),
+        "internal_phase_frequency_hz": (
+            config.student_phase_frequency if config.student_phase_conditioned else 0.0
+        ),
+        "foot_contact_input_enabled": False,
     }
     print(json.dumps(report, indent=2), flush=True)
 

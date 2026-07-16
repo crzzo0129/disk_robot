@@ -18,7 +18,7 @@ def make_forward_teacher_student_env(
     xml_path: str | Path = DEFAULT_XML,
     seed: int = 0,
 ):
-    """Creates a teacher, DAgger collector, or gait-free student MJX env."""
+    """Creates a teacher, DAgger collector, or IK-free student MJX env."""
 
     if role not in ("teacher", "dagger", "student"):
         raise ValueError("role must be 'teacher', 'dagger', or 'student'")
@@ -75,6 +75,7 @@ def make_forward_teacher_student_env(
             self.ctrl_high = jp.asarray(self.contract.ctrl_high)
             self.student_action_scale = jp.asarray(cfg.student_action_scale)
             self.residual_scale = jp.asarray(cfg.residual_scale)
+            self.frequency = float(cfg.student_phase_frequency)
             if ref is not None:
                 self.ik_table = jp.asarray(ref.joint_targets)
                 self.phase_offsets = jp.asarray((0.0, 0.5, 0.5, 0.0))
@@ -95,7 +96,7 @@ def make_forward_teacher_student_env(
         def observation_size(self):
             if self.role == "teacher":
                 return self.config.teacher_observation_size
-            return self.config.student_observation_size
+            return self.config.student_policy_observation_size
 
         @property
         def action_size(self):
@@ -195,12 +196,19 @@ def make_forward_teacher_student_env(
                 student_history,
                 self._student_frame(data, previous_student_action),
             )
+            gait_blend = jp.array(0.0)
+            student_policy_obs = self._student_policy_obs(
+                student_obs, phase, gait_blend
+            )
             info = {
                 "rng": next_rng,
                 "step_count": jp.array(0, dtype=jp.int32),
                 "previous_student_action": previous_student_action,
                 "student_history": student_obs,
                 "student_obs": student_obs,
+                "student_policy_obs": student_policy_obs,
+                "phase": phase,
+                "gait_blend": gait_blend,
                 "last_foot_pos": data.site_xpos[self.foot_site_ids],
                 "target_ctrl": initial_target,
                 "previous_target_ctrl": initial_target,
@@ -222,32 +230,34 @@ def make_forward_teacher_student_env(
                     initial_target,
                     actual_contacts,
                     previous_residual,
-                    jp.array(0.0),
+                    gait_blend,
                     last_push,
                     motor_strength,
                     control_delay,
                 )
                 info.update(
                     {
-                        "phase": phase,
-                        "gait_blend": jp.array(0.0),
                         "previous_residual": previous_residual,
                         "teacher_obs": teacher_obs,
                         "ik_target": initial_target,
                     }
                 )
-            obs = info["teacher_obs"] if self.role == "teacher" else student_obs
+            obs = (
+                info["teacher_obs"]
+                if self.role == "teacher"
+                else info["student_policy_obs"]
+            )
             return State(data, obs, jp.array(0.0), jp.array(0.0), self._empty_metrics(), info)
 
         def step(self, state, action):
             action = jp.clip(action, -1.0, 1.0)
+            phase = state.info["phase"]
+            gait_blend = state.info["gait_blend"]
             if self.role == "student":
                 student_action = action
                 target_ctrl = self.stand_q + self.student_action_scale * student_action
                 residual_action = jp.zeros(self.config.action_size)
             else:
-                phase = state.info["phase"]
-                gait_blend = state.info["gait_blend"]
                 ik_target = self._blended_ik_target(phase, gait_blend)
                 if self.role == "teacher":
                     residual_action = self._filter_teacher_residual(
@@ -310,13 +320,21 @@ def make_forward_teacher_student_env(
                 self.dt, 1e-9
             )
             foot_slip = jp.mean(jp.sum(jp.square(foot_velocity), axis=1) * actual_contacts)
+            command_magnitude = (
+                jp.linalg.norm(self.command[:2]) + jp.abs(self.command[2])
+            )
+            command_active = command_magnitude > self.config.student_command_deadzone
+            phase_increment = jp.where(command_active, self.frequency * self.dt, 0.0)
+            next_phase = jp.mod(phase + phase_increment, 1.0)
+            blend_increment = 1.0 / max(1, self.config.startup_blend_steps)
+            blend_direction = jp.where(command_active, 1.0, -1.0)
+            next_gait_blend = jp.clip(
+                gait_blend + blend_direction * blend_increment, 0.0, 1.0
+            )
             if self.role == "student":
                 residual_delta = jp.zeros(self.config.action_size)
                 contact_mismatch = jp.array(0.0)
             else:
-                next_phase = jp.mod(phase + self.frequency * self.dt, 1.0)
-                blend_increment = 1.0 / max(1, self.config.startup_blend_steps)
-                next_gait_blend = jp.minimum(1.0, gait_blend + blend_increment)
                 next_ik_target = self._blended_ik_target(next_phase, next_gait_blend)
                 desired_contacts = self._desired_contacts(next_phase)
                 residual_delta = residual_action - state.info["previous_residual"]
@@ -389,12 +407,18 @@ def make_forward_teacher_student_env(
                 state.info["student_history"],
                 self._student_frame(data, student_action),
             )
+            student_policy_obs = self._student_policy_obs(
+                student_history, next_phase, next_gait_blend
+            )
             info = {
                 **state.info,
                 "step_count": step_count,
                 "previous_student_action": student_action,
                 "student_history": student_history,
                 "student_obs": student_history,
+                "student_policy_obs": student_policy_obs,
+                "phase": next_phase,
+                "gait_blend": next_gait_blend,
                 "last_foot_pos": foot_pos,
                 "target_ctrl": applied_target,
                 "previous_target_ctrl": strength_target,
@@ -418,8 +442,6 @@ def make_forward_teacher_student_env(
                 )
                 info.update(
                     {
-                        "phase": next_phase,
-                        "gait_blend": next_gait_blend,
                         "previous_residual": residual_action,
                         "teacher_obs": teacher_obs,
                         "ik_target": next_ik_target,
@@ -451,7 +473,11 @@ def make_forward_teacher_student_env(
                 "failed": failed,
                 "timeout": timeout_bool.astype(jp.float32),
             }
-            obs = info["teacher_obs"] if self.role == "teacher" else student_history
+            obs = (
+                info["teacher_obs"]
+                if self.role == "teacher"
+                else info["student_policy_obs"]
+            )
             return State(data, obs, reward, done, metrics, info)
 
         def teacher_action_to_student_action(self, state, residual_action):
@@ -507,6 +533,15 @@ def make_forward_teacher_student_env(
         def _update_student_history(self, history, frame):
             size = self.config.student_frame_size
             return jp.roll(history, size).at[:size].set(frame)
+
+        def _student_policy_obs(self, student_history, phase, gait_blend):
+            if not self.config.student_phase_conditioned:
+                return student_history
+            phase_angle = 2.0 * jp.pi * phase
+            internal_state = jp.stack(
+                (jp.sin(phase_angle), jp.cos(phase_angle), gait_blend)
+            )
+            return jp.concatenate((student_history, internal_state))
 
         def _teacher_obs(
             self,

@@ -301,6 +301,8 @@ def test_teacher_env_has_privileged_residual_and_student_modes():
     assert 'state.info["control_delay"]' in source
     assert 'state.info["smoothed_world_velocity"]' in source
     assert 'state.info["recovery_streak"]' in source
+    assert '"student_policy_obs"' in source
+    assert "student_policy_observation_size" in source
     assert '"mean_post_push_velocity_error"' in open(
         "scripts/train_forward_teacher_student.py", encoding="utf-8"
     ).read()

@@ -32,4 +32,7 @@ def test_student_evaluation_entry_is_gait_free_by_contract():
     args = parse_args(["student_policy.npz", "--envs", "8"])
 
     assert args.policy.name == "student_policy.npz"
+    source = open("scripts/evaluate_forward_student.py", encoding="utf-8").read()
+    assert '"internal_phase_enabled"' in source
+    assert '"foot_contact_input_enabled": False' in source
     assert args.envs == 8

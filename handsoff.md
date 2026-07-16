@@ -373,9 +373,70 @@ reduced nominal/disturbed velocity from `0.0340/0.0303` to `0.0036/-0.0009`. The
 fallback selector retained round 0, so no collapsed policy was selected. Phase-preserving
 collection alone is insufficient when each supervised update can move the policy this far.
 
-## 13. Current Task: T4c Conservative Phase-Preserving DAgger
+## 13. T4c Conservative DAgger Result: Failed
 
-`scripts/dagger_forward_student.py` now:
+The paired-seed T4c smoke still degraded the Student:
+
+```text
+                         round 0      round 1
+nominal vx               0.0334       0.0126
+disturbed vx             0.0333       0.0196
+nominal failure_rate     0.062        0
+disturbed recovery       0.983 s      1.465 s
+```
+
+The lower learning rate and anchor prevented an immediate collapse to exact standing, but
+velocity and recovery still worsened under identical evaluation conditions. Do not run a
+formal T4c or keep tuning the phase-free feed-forward Student.
+
+## 14. Current Task: T5 IK-Free Phase-Conditioned Student
+
+T5 keeps the accepted Teacher parameter contract unchanged:
+
+```text
+Teacher observation             231
+Student sensor history          192
+Student internal clock state      3
+Student policy observation      195
+```
+
+The three controller-owned values are:
+
+```text
+sin(phase), cos(phase), gait_blend
+```
+
+They require no foot-contact sensor, ground reaction force, IK, or Teacher at runtime. The
+phase advances from the controller clock at the accepted reference frequency (`1.2 Hz` for
+the current `vx=0.08` experiment). When the command enters the deadzone, phase freezes and
+`gait_blend` ramps back toward stand. `disk_robot/phase_clock.py` provides the matching NumPy
+runtime implementation for later hardware control.
+
+The new entry point is:
+
+```bash
+python -m scripts.distill_phase_student --teacher-run mjx_runs/teacher_t2a_seed0 --smoke --out mjx_runs/student_t5_phase_bc_smoke_seed0
+```
+
+Expected startup contract:
+
+```text
+stage=t5_teacher ... teacher_obs=231 student_obs=195
+stage=t5_dataset_plan ... phase_conditioned=True
+```
+
+Smoke only verifies compilation and the 195-dimensional data path. If it reaches
+`stage=t5_acceptance`, run the full BC experiment:
+
+```bash
+python -m scripts.distill_phase_student --teacher-run mjx_runs/teacher_t2a_seed0 --out mjx_runs/student_t5_phase_bc_seed0 --save-dataset --strict-acceptance
+```
+
+The fixed `vx=0.08` T5 experiment is a root-cause test. It does not yet provide full joystick
+control. After T5 restores forward velocity, Stage B must randomize `vx`, `vy`, and yaw
+commands and make oscillator frequency/blend command-conditioned.
+
+The previous conservative DAgger implementation remains available for diagnostics:
 
 - loads the frozen accepted Teacher and the existing T3 Student instead of reinitializing;
 - requires the T3 dataset saved by `--save-dataset`;
@@ -390,23 +451,7 @@ collection alone is insufficient when each supervised update can move the policy
 - uses no Teacher blend during evaluation or in the deployed Student;
 - never updates or overwrites Teacher or T3 artifacts.
 
-Run a new cloud smoke without overwriting T4/T4b:
-
-```bash
-python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --smoke --out mjx_runs/student_t4c_conservative_smoke_seed0
-```
-
-Do not start a formal run merely because the smoke reaches the final stage. Round 1 pure-Student
-velocity must also remain close to round 0. If conservative smoke still collapses toward zero
-velocity, stop tuning DAgger and choose explicit phase input or a recurrent Student.
-
-If velocity is retained, formal T4c should use three rounds with blend `0.50 -> 0.30 -> 0.10`:
-
-```bash
-python -m scripts.dagger_forward_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t3_bc_seed0 --dagger-rounds 3 --teacher-rollout-blend-start 0.5 --teacher-rollout-blend-end 0.1 --out mjx_runs/student_t4c_conservative_seed0 --save-dataset --strict-acceptance
-```
-
-## 14. Commands And Workflow Notes
+## 15. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -421,4 +466,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T4c conservative update change are `101 passed`.
+local tests after the T5 phase-conditioned Student implementation are `105 passed`.
