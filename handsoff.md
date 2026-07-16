@@ -428,7 +428,7 @@ Adding phase did not by itself solve closed-loop imitation. Static code audit co
 the Student phase observation and Teacher direct-action label are generated from the same
 environment state, so do not assume a simple one-control-step bug without dynamic evidence.
 
-## 15. Current Task: T5 Oracle Direct-Action Diagnosis
+## 15. T5 Oracle Direct-Action Diagnosis: Passed
 
 `scripts/diagnose_phase_student.py` performs a read-only, paired-seed comparison of:
 
@@ -444,13 +444,62 @@ Run:
 python -m scripts.diagnose_phase_student --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t5_phase_bc_seed0
 ```
 
-Interpretation:
+The actual diagnosis result was:
 
-- If `oracle_direct` also fails to preserve Teacher velocity, the direct-action target/control
-  conversion is the problem. Fix the action interface before any more Student training.
-- If `oracle_direct` stays near `0.08` but `learned_student` fails, the problem is closed-loop
-  supervised imitation/covariate shift despite observable phase. The next architecture should
-  be recurrent or trained with a closed-loop objective, not another fixed-dataset BC run.
+```text
+teacher_residual vx     0.0817
+oracle_direct vx        0.0817
+learned_student vx     -0.0071
+oracle preserves vx     True
+```
+
+This rules out a phase-timing mismatch, Teacher-to-Student action conversion bug, and invalid
+direct-position control interface. Executing the Teacher's online direct-action labels through
+the Student actuator path preserves the Teacher motion. The remaining failure is learned
+Student closed-loop covariate drift.
+
+## 16. Current Task: T6 Phase-Conditioned DAgger
+
+All previous T4 experiments used the old phase-free T3 Student. The 195-dimensional T5 Student
+has not previously received DAgger data from its own closed-loop states. The DAgger entry now
+auto-detects the source artifact:
+
+```text
+T3_BC          -> T4_DAGGER       192 observations
+T5_PHASE_BC    -> T6_PHASE_DAGGER 195 observations
+```
+
+For T6 it:
+
+- loads `student_policy_phase_bc.npz` and `student_phase_bc_dataset.npz`;
+- reconstructs the exact T5 phase-conditioned environment config from policy metadata;
+- validates that the policy, normalization statistics, saved dataset, and environment all use
+  the 195-dimensional observation contract;
+- rolls out the phase-conditioned Student and asks the frozen accepted Teacher for online
+  labels at the same phase;
+- retains conservative Teacher blending, `1e-5` learning rate, per-round anchoring, paired
+  evaluation seeds, and best-round fallback selection;
+- saves `student_policy_phase_dagger.npz` with stage `T6_PHASE_DAGGER`;
+- requires no foot-contact input or IK at Student runtime.
+
+Run the T6 technical smoke first:
+
+```bash
+python -m scripts.dagger_phase_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t5_phase_bc_seed0 --smoke --out mjx_runs/student_t6_phase_dagger_smoke_seed0
+```
+
+The source line must report:
+
+```text
+stage=t6_source ... obs=195 phase_conditioned=True
+```
+
+Smoke only verifies the T6 path and gives a directional signal from 20 updates. It is not
+expected to pass formal acceptance. Compare round 1 against the paired round 0 T5 baseline,
+especially `vx`; run a formal T6 only if the update is non-destructive or improves forward
+velocity. If phase-conditioned DAgger also repeatedly drives velocity away from `0.08`, stop
+tuning feed-forward imitation and move to a recurrent Student or a closed-loop training
+objective.
 
 The previous conservative DAgger implementation remains available for diagnostics:
 
@@ -467,7 +516,7 @@ The previous conservative DAgger implementation remains available for diagnostic
 - uses no Teacher blend during evaluation or in the deployed Student;
 - never updates or overwrites Teacher or T3 artifacts.
 
-## 16. Commands And Workflow Notes
+## 17. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -482,4 +531,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T5 oracle diagnosis implementation are `106 passed`.
+local tests after the T6 implementation are `108 passed`.
