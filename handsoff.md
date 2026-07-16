@@ -458,7 +458,7 @@ direct-position control interface. Executing the Teacher's online direct-action 
 the Student actuator path preserves the Teacher motion. The remaining failure is learned
 Student closed-loop covariate drift.
 
-## 16. Current Task: T6 Phase-Conditioned DAgger
+## 16. T6 Phase-Conditioned DAgger Smoke: Failed
 
 All previous T4 experiments used the old phase-free T3 Student. The 195-dimensional T5 Student
 has not previously received DAgger data from its own closed-loop states. The DAgger entry now
@@ -482,24 +482,26 @@ For T6 it:
 - saves `student_policy_phase_dagger.npz` with stage `T6_PHASE_DAGGER`;
 - requires no foot-contact input or IK at Student runtime.
 
-Run the T6 technical smoke first:
+The T6 technical smoke correctly loaded the 195-dimensional T5 policy:
 
 ```bash
-python -m scripts.dagger_phase_student --teacher-run mjx_runs/teacher_t2a_seed0 --bc-run mjx_runs/student_t5_phase_bc_seed0 --smoke --out mjx_runs/student_t6_phase_dagger_smoke_seed0
-```
-
-The source line must report:
-
-```text
 stage=t6_source ... obs=195 phase_conditioned=True
 ```
 
-Smoke only verifies the T6 path and gives a directional signal from 20 updates. It is not
-expected to pass formal acceptance. Compare round 1 against the paired round 0 T5 baseline,
-especially `vx`; run a formal T6 only if the update is non-destructive or improves forward
-velocity. If phase-conditioned DAgger also repeatedly drives velocity away from `0.08`, stop
-tuning feed-forward imitation and move to a recurrent Student or a closed-loop training
-objective.
+Its paired results were:
+
+```text
+                         round 0      round 1
+nominal vx               -0.0106      -0.0076
+disturbed vx             -0.0003      -0.0053
+disturbed post error      0.0948       0.1265
+disturbed recovery        1.216 s      1.396 s
+score                    -8.56997     -8.75342
+```
+
+The selector correctly retained round 0. Do not run formal T6. Phase-conditioned DAgger did
+not restore forward motion and worsened disturbed recovery, so another BC/DAgger tuning pass
+is not the current task.
 
 The previous conservative DAgger implementation remains available for diagnostics:
 
@@ -516,7 +518,54 @@ The previous conservative DAgger implementation remains available for diagnostic
 - uses no Teacher blend during evaluation or in the deployed Student;
 - never updates or overwrites Teacher or T3 artifacts.
 
-## 17. Commands And Workflow Notes
+## 17. Current Task: T7 Failure Root-Cause Audit
+
+Do not train a new policy until the failure mechanism is measured. The read-only
+`scripts/audit_phase_student_failure.py` audit covers four questions:
+
+1. **Offline error structure:** per-joint bias/RMSE, physical target error in radians, and
+   phase-binned error on the original 131,072-sample T5 dataset.
+2. **Oracle approximation margin:** execute online Teacher direct actions with persistent
+   episode bias and stepwise Gaussian errors at action RMS levels
+   `0, 0.001, 0.002, 0.005, 0.01`.
+3. **Paired closed-loop divergence:** from identical deployment-style phase-zero resets, run
+   oracle and Student branches in parallel and measure the first joint/torso divergence,
+   Student-vs-online-Teacher correction error, and how the Teacher label changes after the
+   Student leaves the oracle trajectory.
+4. **Identifiability evidence:** among nearby deployable observations from different
+   environments, compare Teacher-label disagreement with deterministic Student-action
+   disagreement.
+
+The audit never updates or overwrites a policy. It writes:
+
+```text
+mjx_runs/student_t5_phase_bc_seed0/failure_audit.json
+mjx_runs/student_t5_phase_bc_seed0/failure_audit_trace.npz
+```
+
+Run the technical smoke:
+
+```bash
+python -m scripts.audit_phase_student_failure --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t5_phase_bc_seed0 --smoke
+```
+
+If the smoke completes, run the full audit:
+
+```bash
+python -m scripts.audit_phase_student_failure --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t5_phase_bc_seed0
+```
+
+Interpret the result before choosing another learning algorithm:
+
+- failure at action RMS near the Student offline RMSE means the oracle gait has inadequate
+  approximation margin;
+- a dominant joint or phase-localized bias points to the action representation/loss;
+- very early physical divergence plus rapidly growing Teacher-label drift indicates a
+  high-gain, narrow-attraction-basin target;
+- materially higher Teacher disagreement than Student disagreement for nearby deployable
+  observations is evidence that privileged action distillation is not identifiable.
+
+## 18. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -531,4 +580,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T6 implementation are `108 passed`.
+local test result after the T7 audit implementation is `111 passed`.
