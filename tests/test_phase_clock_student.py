@@ -68,3 +68,17 @@ def test_phase_student_keeps_teacher_observation_contract_and_has_no_contact_inp
     assert "requires_foot_contact" in distill_source
     assert "self._student_policy_obs(" in env_source
     assert "student_history, internal_state" in env_source
+
+
+def test_phase_diagnosis_compares_teacher_oracle_and_learned_student():
+    source = open("scripts/diagnose_phase_student.py", encoding="utf-8").read()
+    pipeline_source = open(
+        "scripts/train_forward_teacher_student.py", encoding="utf-8"
+    ).read()
+
+    assert "_evaluate_teacher(" in source
+    assert "_evaluate_oracle_student(" in source
+    assert "_evaluate_student(" in source
+    assert "oracle_preserves_teacher_velocity" in source
+    assert "def _evaluate_oracle_student" in pipeline_source
+    assert "teacher_action_to_student_action" in pipeline_source

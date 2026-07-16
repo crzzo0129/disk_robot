@@ -389,7 +389,7 @@ The lower learning rate and anchor prevented an immediate collapse to exact stan
 velocity and recovery still worsened under identical evaluation conditions. Do not run a
 formal T4c or keep tuning the phase-free feed-forward Student.
 
-## 14. Current Task: T5 IK-Free Phase-Conditioned Student
+## 14. T5 IK-Free Phase-Conditioned Student Result: Failed
 
 T5 keeps the accepted Teacher parameter contract unchanged:
 
@@ -412,29 +412,45 @@ the current `vx=0.08` experiment). When the command enters the deadzone, phase f
 `gait_blend` ramps back toward stand. `disk_robot/phase_clock.py` provides the matching NumPy
 runtime implementation for later hardware control.
 
-The new entry point is:
-
-```bash
-python -m scripts.distill_phase_student --teacher-run mjx_runs/teacher_t2a_seed0 --smoke --out mjx_runs/student_t5_phase_bc_smoke_seed0
-```
-
-Expected startup contract:
+The formal T5 run `mjx_runs/student_t5_phase_bc_seed0` also fit its offline dataset nearly
+exactly but moved backward in closed loop:
 
 ```text
-stage=t5_teacher ... teacher_obs=231 student_obs=195
-stage=t5_dataset_plan ... phase_conditioned=True
+final BC loss                    0.0000045
+nominal mean_velocity_x         -0.0076
+disturbed mean_velocity_x       -0.0092
+nominal failure_rate             0.004
+disturbed failure_rate           0.004
+accepted                         False
 ```
 
-Smoke only verifies compilation and the 195-dimensional data path. If it reaches
-`stage=t5_acceptance`, run the full BC experiment:
+Adding phase did not by itself solve closed-loop imitation. Static code audit confirms that
+the Student phase observation and Teacher direct-action label are generated from the same
+environment state, so do not assume a simple one-control-step bug without dynamic evidence.
+
+## 15. Current Task: T5 Oracle Direct-Action Diagnosis
+
+`scripts/diagnose_phase_student.py` performs a read-only, paired-seed comparison of:
+
+```text
+Teacher residual control
+Teacher online labels executed as direct Student actions
+Learned T5 phase-conditioned Student
+```
+
+Run:
 
 ```bash
-python -m scripts.distill_phase_student --teacher-run mjx_runs/teacher_t2a_seed0 --out mjx_runs/student_t5_phase_bc_seed0 --save-dataset --strict-acceptance
+python -m scripts.diagnose_phase_student --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t5_phase_bc_seed0
 ```
 
-The fixed `vx=0.08` T5 experiment is a root-cause test. It does not yet provide full joystick
-control. After T5 restores forward velocity, Stage B must randomize `vx`, `vy`, and yaw
-commands and make oscillator frequency/blend command-conditioned.
+Interpretation:
+
+- If `oracle_direct` also fails to preserve Teacher velocity, the direct-action target/control
+  conversion is the problem. Fix the action interface before any more Student training.
+- If `oracle_direct` stays near `0.08` but `learned_student` fails, the problem is closed-loop
+  supervised imitation/covariate shift despite observable phase. The next architecture should
+  be recurrent or trained with a closed-loop objective, not another fixed-dataset BC run.
 
 The previous conservative DAgger implementation remains available for diagnostics:
 
@@ -451,7 +467,7 @@ The previous conservative DAgger implementation remains available for diagnostic
 - uses no Teacher blend during evaluation or in the deployed Student;
 - never updates or overwrites Teacher or T3 artifacts.
 
-## 15. Commands And Workflow Notes
+## 16. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -466,4 +482,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local tests after the T5 phase-conditioned Student implementation are `105 passed`.
+local tests after the T5 oracle diagnosis implementation are `106 passed`.
