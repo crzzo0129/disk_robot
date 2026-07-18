@@ -4,7 +4,8 @@
 
 ## 当前可执行规范
 
-- [forward_teacher_student.md](forward_teacher_student.md)：当前对称 IK、privileged Teacher、BC、DAgger 和 Student-only 验收的唯一运行依据。
+- [forward_teacher_student.md](forward_teacher_student.md)：当前对称 IK、privileged Teacher、phase-conditioned BC 和 Student-only 验收的运行依据。
+- [student_imitation_failure_debugging.md](student_imitation_failure_debugging.md)：T3--T8 从低离线 MSE、闭环失败到定位 previous-action 高增益自反馈的完整证据链与通用调试方法。
 - [common_commands.md](common_commands.md)：当前可用的检查、仿真和训练冒烟命令。
 - [todo_extreme_disk_quadruped.md](todo_extreme_disk_quadruped.md)：按当前 pipeline 排列的实施任务。
 
@@ -21,6 +22,6 @@
 ## 约定
 
 - 固定 gait residual 只用于当前 Teacher 的探索引导，不是最终 Student 的运行时接口。
-- 最终 Student 从 `stand` 输出完整关节位置动作，不读取 IK、phase 或期望接触。
+- 当前 T8 Student 从 `stand` 输出完整关节位置动作，不读取 IK、期望接触、足部接触或 previous action；它使用 controller-owned phase clock。
 - 旧的 `mjx_train_walk` 从零 PPO 和 `teacher_blend` 退火实验不再是当前主线。
 - 每次改变动作、观测、奖励或 command 定义时，先更新训练 pipeline，再更新实现与测试。

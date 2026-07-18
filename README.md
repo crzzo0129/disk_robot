@@ -43,23 +43,27 @@ The XML keeps 12 independent position actuators. Paired front/rear flex control 
 
 ## Walk Training Status
 
-The active training model is `assets/pupper_v3_disk_structure_candidate.xml`. The forward training path uses a
-symmetric IK reference, a privileged residual PPO teacher, behavior cloning, and DAgger to
-produce a student that runs without IK or gait phase inputs.
+The active training model is `assets/pupper_v3_disk_structure_candidate.xml`. The accepted
+fixed-speed path uses a symmetric IK reference, a privileged residual PPO Teacher, and
+behavior cloning to produce a Student that runs without IK, contact inputs, privileged
+observations, or previous action. The Student uses a controller-owned phase clock.
 
-Run the complete pipeline in the offline Linux `mjx312` environment:
+The frozen accepted runs are:
 
-```bash
-python -m scripts.train_forward_teacher_student --smoke --out mjx_runs/forward_008_smoke
-python -m scripts.train_forward_teacher_student --out mjx_runs/forward_008_v1 --teacher-evals 21 --strict-acceptance
+```text
+Teacher: mjx_runs/teacher_t2a_seed0
+Student: mjx_runs/student_t8_phase_bc_no_previous_action_seed0
 ```
 
 The offline instance must already have the packages in `requirements-mjx.txt` available in
 the active `mjx312` environment.
 
-The final deployable artifact is `mjx_runs/forward_ts/student_policy.npz`. See
-`docs/forward_teacher_student.md` for the observation contract, stages, outputs, evaluation,
-and checkpoint recovery command. The older `mjx_train_walk` entry remains available for
-environment regression only; it is not the active teacher-student pipeline.
+The fixed-speed deployable candidate is
+`mjx_runs/student_t8_phase_bc_no_previous_action_seed0/student_policy_phase_bc_no_previous_action.npz`.
+See `docs/forward_teacher_student.md` for the current contract and
+`docs/student_imitation_failure_debugging.md` for the T3--T8 failure diagnosis. The older
+`mjx_train_walk` and DAgger entries remain available for regression/diagnostics; they are not
+the accepted fixed-speed path.
 
-The default MuJoCo GL backend for cloud training is `egl`; use `--mujoco-gl osmesa` only on machines with a working OSMesa stack.
+Use `egl` where it is available. On the current RTX 4090 node without EGL, pass
+`--mujoco-gl disable` for headless training and diagnostics.

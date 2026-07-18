@@ -42,32 +42,49 @@ python3.12 scripts\view_ik_gait.py --xml assets\pupper_v3_disk_structure_candida
 python -m scripts.sweep_structure_variants
 ```
 
-## 当前 Teacher-Student 训练
+## 当前 Teacher-Student 训练与诊断
 
-云端 smoke：
+冻结的 accepted Teacher 是 `mjx_runs/teacher_t2a_seed0`，accepted Student 是
+`mjx_runs/student_t8_phase_bc_no_previous_action_seed0`。不要覆盖这两个目录。
+
+Teacher 全链路 smoke：
 
 ```bash
 python -m scripts.train_forward_teacher_student --smoke --out mjx_runs/forward_008_smoke
 ```
 
-Smoke 仅验证整条软件链路。Student 验收失败不表示代码报错，先检查 `stage=ik_baseline` 和 `stage=teacher_acceptance`。
+Smoke 仅验证软件链路。验收失败不等于代码报错，先检查每个 stage 的明确结果。
 
-结构和 IK baseline 经可视化确认后，运行正式 `0.08 m/s` 前进训练：
-
-```bash
-python -m scripts.train_forward_teacher_student --out mjx_runs/forward_008_v1 --teacher-evals 21 --strict-acceptance
-```
-
-单独评估 Student：
+T8 no-previous-action Student smoke：
 
 ```bash
-python -m scripts.evaluate_forward_student mjx_runs/forward_008_v1/student_policy.npz
+python -m scripts.distill_phase_student_no_previous_action --teacher-run mjx_runs/teacher_t2a_seed0 --smoke --save-dataset --mujoco-gl disable --out mjx_runs/student_t8_phase_bc_no_previous_action_smoke_seed0
 ```
 
-旧的 `scripts.mjx_train_walk`、`teacher_blend` 退火和 `0.15 m/s` 命令仍可用于历史实验，但不再是当前 pipeline 的验收入口。
+正式复现 T8：
+
+```bash
+python -m scripts.distill_phase_student_no_previous_action --teacher-run mjx_runs/teacher_t2a_seed0 --save-dataset --strict-acceptance --mujoco-gl disable --out mjx_runs/student_t8_phase_bc_no_previous_action_seed0
+```
+
+复查 T8 闭环反馈：
+
+```bash
+python -m scripts.diagnose_phase_student_feedback --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0
+```
+
+复现失败 T5 的完整根因 audit：
+
+```bash
+python -m scripts.audit_phase_student_failure --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t5_phase_bc_seed0 --mujoco-gl disable
+```
+
+旧的 phase-free BC/DAgger、`scripts.mjx_train_walk`、`teacher_blend` 退火和 `0.15 m/s`
+命令只保留作历史实验或诊断，不是当前部署候选入口。
 
 ## 云端提示
 
-- 默认 MuJoCo GL 后端使用 `egl`。
+- H200 节点可在 EGL 可用时使用 `egl`。
+- 当前 RTX 4090 节点缺少可用 EGL 时使用 `--mujoco-gl disable`；这些训练和无渲染诊断不需要 GL context。
 - 仅在 OSMesa 配置完整的机器上使用 `--mujoco-gl osmesa`。
 - 长训练前先运行单元测试和短 MJX 冒烟，并使用新的输出目录保存配置和评估结果。

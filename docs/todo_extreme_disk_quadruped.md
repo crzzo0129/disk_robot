@@ -13,13 +13,16 @@
 
 这些完成项表示工具链可运行，不表示旧奖励或 open-loop residual 接口满足最终目标。
 
-## P0：无 Gait 行走契约
+## P0：无运行时 IK 的行走契约
 
 - [x] 固化关节顺序、正方向、零位、`q_stand` 与每关节 action scale。
 - [x] 将动作目标统一为 `a=tanh(policy_logits)`、`q_target=q_stand + action_scale * a`。
-- [x] 移除最终 actor 对 gait phase、teacher target 和预设接触时序的依赖。
+- [x] 移除最终 actor 对 runtime IK、teacher target、预设/实际接触和 privileged observation 的依赖。
+- [x] 使用 controller-owned `sin/cos phase + gait_blend` 消除固定周期动作的标签歧义。
 - [x] command 统一为机身坐标系 `[vx, vy, wz]`。
-- [x] actor 使用 IMU、关节、上一动作、command 和机身线速度估计，历史长度设为 4 帧。
+- [x] T8 actor 使用四帧 IMU、关节、command 和机身线速度估计，并结构性删除 previous action。
+- [x] 用 paired rollout、group counterfactual、Jacobian gain 和单变量消融确认 previous-action 自反馈根因。
+- [ ] 单独比较 4/2/1 帧 sensor history；不要把 previous-action 删除结论外推为删除全部历史。
 - [ ] 确认 Pupper 实机线速度估计质量；必要时用噪声训练或蒸馏降低依赖。
 
 ## P0：环境正确性
@@ -34,24 +37,25 @@
 ## P1：当前 Teacher-Student 基线
 
 - [x] 实现对称 IK v2、privileged residual PPO Teacher、BC 和 DAgger 完整入口。
-- [x] 保证最终 actor 不输入 gait phase。
+- [x] 实现不依赖接触传感器的 controller-owned phase clock。
 - [x] 增加 IK baseline、最佳 Teacher 保存、checkpoint 恢复和严格验收。
 - [x] 使用世界前向净位移阻止通过躯干摇晃刷速度。
 - [x] 完成结构参数扫描并生成候选 XML。
-- [ ] 本地人工验收结构候选的 IK gait、自碰撞和足端轨迹。
-- [ ] 在云端候选 XML 上重新运行 IK baseline 和 smoke。
-- [ ] 训练并验收正式 Teacher；未通过时先改结构、IK 或控制，不继续蒸馏。
-- [ ] Teacher 通过后完成 BC、DAgger 和 Student-only 验收。
+- [x] 在云端候选 XML 上运行 IK baseline，并完成 T1b 名义保持。
+- [x] 训练并验收 T2a privileged disturbance Teacher（step `1,024,000`）。
+- [x] 完成 T3--T7 Student 失败审计，排除 Teacher、phase、标签转换和 actuator 接口。
+- [x] 完成 T8 no-previous-action BC 与 Student-only 名义/扰动验收。
+- [ ] 本地人工复查 accepted gait 的自碰撞、足端轨迹和部署视频。
 
-## P1：解除 Gait 锚点与 Command Curriculum
+## P1：Command-conditioned 手柄控制
 
-- [ ] 实现 command-conditioned IK reference。
-- [ ] 实现 IK 锚点权重 `beta` 从 1 到 0 的退火，并同步扩大完整动作范围。
-- [ ] 从 BC/DAgger Student 启动无 IK 的 PPO fine-tuning。
-- [ ] 在同一 run 内逐步扩展 `vx`，不重置 optimizer。
-- [ ] 加入停止、后退、`vy` 和 `wz`，最后联合采样。
-- [ ] 固定 evaluation seeds 与 command 网格，按门槛扩大任务空间。
-- [ ] 在 `0.1 m/s` 前进通过后再进入全向任务。
+- [ ] 冻结 accepted T2a/T8，不把 joystick 直接连接到固定 `vx=0.08` 策略。
+- [ ] 设计并实现真正随机化的一维 `vx` Teacher/数据收集，先覆盖停止、启动和低速前进。
+- [ ] 将当前 command 从四帧历史的重复项改为单个当前 command，并做单变量兼容实验。
+- [ ] 保持 T8 no-previous-action Student observation 契约。
+- [ ] 固定 evaluation seeds 与 `vx` 网格，检查稳态误差、切换过渡、扰动恢复和 command counterfactual。
+- [ ] 一维 `vx` 通过后加入 `wz`，最后加入 `vy` 与后退。
+- [ ] 根据 command-conditioned 结果再决定是否需要 PPO fine-tuning、锚点退火或 phase 自适应。
 
 ## P2：Sim-to-real
 
