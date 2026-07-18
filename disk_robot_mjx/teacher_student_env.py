@@ -535,6 +535,12 @@ def make_forward_teacher_student_env(
             return jp.roll(history, size).at[:size].set(frame)
 
         def _student_policy_obs(self, student_history, phase, gait_blend):
+            if not self.config.student_previous_action_input:
+                frames = student_history.reshape(
+                    self.config.observation_history, self.config.student_frame_size
+                )
+                frames = jp.concatenate((frames[:, :33], frames[:, 45:]), axis=1)
+                student_history = frames.reshape(-1)
             if not self.config.student_phase_conditioned:
                 return student_history
             phase_angle = 2.0 * jp.pi * phase

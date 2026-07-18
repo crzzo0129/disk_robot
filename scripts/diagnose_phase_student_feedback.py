@@ -45,7 +45,10 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def observation_group_indices(observation_history=4, frame_size=48):
+def observation_group_indices(
+    observation_history=4, frame_size=48, previous_action_input=True
+):
+    command_start = 45 if previous_action_input else 33
     frame_groups = {
         "imu_and_body_velocity_history": np.concatenate(
             [np.arange(frame * frame_size, frame * frame_size + 9) for frame in range(observation_history)]
@@ -56,17 +59,24 @@ def observation_group_indices(observation_history=4, frame_size=48):
         "joint_velocity_history": np.concatenate(
             [np.arange(frame * frame_size + 21, frame * frame_size + 33) for frame in range(observation_history)]
         ),
-        "previous_action_history": np.concatenate(
-            [np.arange(frame * frame_size + 33, frame * frame_size + 45) for frame in range(observation_history)]
-        ),
         "command_history": np.concatenate(
-            [np.arange(frame * frame_size + 45, frame * frame_size + 48) for frame in range(observation_history)]
+            [np.arange(frame * frame_size + command_start, (frame + 1) * frame_size) for frame in range(observation_history)]
         ),
     }
+    if previous_action_input:
+        frame_groups = {
+            "latest_previous_action": np.arange(33, 45),
+            "previous_action_history": np.concatenate(
+                [np.arange(frame * frame_size + 33, frame * frame_size + 45) for frame in range(observation_history)]
+            ),
+            **frame_groups,
+        }
     return {
-        "latest_previous_action": np.arange(33, 45),
         **frame_groups,
-        "phase_clock": np.arange(observation_history * frame_size, observation_history * frame_size + 3),
+        "phase_clock": np.arange(
+            observation_history * frame_size,
+            observation_history * frame_size + 3,
+        ),
     }
 
 
@@ -226,8 +236,11 @@ def main(argv=None):
     _validate_bc_teacher_contract(
         artifact, teacher_run, teacher_evaluation, config, teacher_config
     )
-    if artifact.metadata.get("stage") != "T5_PHASE_BC":
-        raise SystemExit("Feedback diagnosis requires the original T5 phase BC policy")
+    if artifact.metadata.get("stage") not in {
+        "T5_PHASE_BC",
+        "T8_PHASE_BC_NO_PREVIOUS_ACTION",
+    }:
+        raise SystemExit("Feedback diagnosis requires a T5 or T8 phase BC policy")
     reference_spec = _reference_spec_from_teacher_run(run_config)
     xml_path = _resolve_xml_path(run_config, args.xml_path)
     output_path = (
@@ -299,7 +312,9 @@ def main(argv=None):
     label_drift = _rms_per_step(teacher_correction - oracle_label)
     q_rmse = _rms_per_step(q_error)
     groups = observation_group_indices(
-        config.observation_history, config.student_frame_size
+        config.observation_history,
+        config.student_policy_frame_size,
+        config.student_previous_action_input,
     )
     attribution = _group_attribution(
         artifact, oracle_obs, student_obs, student_on_oracle, groups
@@ -322,6 +337,7 @@ def main(argv=None):
         "student_policy": str(student_path),
         "envs": args.envs,
         "steps": args.steps,
+        "previous_action_input": config.student_previous_action_input,
         "per_step": [
             {
                 "step": index,

@@ -30,6 +30,7 @@ class ForwardTeacherStudentConfig:
     residual_scale: tuple[float, ...] = RESIDUAL_SCALE
     residual_filter_alpha: float = 0.15
     student_phase_conditioned: bool = False
+    student_previous_action_input: bool = True
     student_phase_frequency: float = 1.2
     student_command_deadzone: float = 0.01
 
@@ -83,13 +84,21 @@ class ForwardTeacherStudentConfig:
         return self.student_frame_size * self.observation_history
 
     @property
+    def student_policy_frame_size(self) -> int:
+        return self.student_frame_size if self.student_previous_action_input else self.student_frame_size - 12
+
+    @property
+    def student_policy_sensor_history_size(self) -> int:
+        return self.student_policy_frame_size * self.observation_history
+
+    @property
     def student_internal_state_size(self) -> int:
         # Internal oscillator sin/cos and the controller-owned startup/stop blend.
         return 3 if self.student_phase_conditioned else 0
 
     @property
     def student_policy_observation_size(self) -> int:
-        return self.student_observation_size + self.student_internal_state_size
+        return self.student_policy_sensor_history_size + self.student_internal_state_size
 
     @property
     def privileged_size(self) -> int:

@@ -82,6 +82,10 @@ def parse_args(argv=None):
 def _load_bc_run(bc_run: Path):
     bc_run = bc_run.expanduser().resolve()
     candidates = (
+        (
+            "student_policy_phase_bc_no_previous_action.npz",
+            "student_phase_bc_no_previous_action_dataset.npz",
+        ),
         ("student_policy_phase_bc.npz", "student_phase_bc_dataset.npz"),
         ("student_policy_bc.npz", "student_bc_dataset.npz"),
     )
@@ -119,13 +123,15 @@ def _config_from_student_artifact(artifact, teacher_config):
     stage = artifact.metadata.get("stage")
     if stage == "T3_BC":
         return teacher_config
-    if stage != "T5_PHASE_BC":
+    phase_stages = {"T5_PHASE_BC", "T8_PHASE_BC_NO_PREVIOUS_ACTION"}
+    if stage not in phase_stages:
         raise SystemExit(
-            "DAgger requires a Student artifact with stage=T3_BC or stage=T5_PHASE_BC"
+            "Student artifact stage must be T3_BC, T5_PHASE_BC, or "
+            "T8_PHASE_BC_NO_PREVIOUS_ACTION"
         )
     values = artifact.metadata.get("config")
     if not isinstance(values, dict):
-        raise SystemExit("T5 Student metadata has no complete config contract")
+        raise SystemExit("Phase Student metadata has no complete config contract")
     allowed = {field.name for field in fields(ForwardTeacherStudentConfig)}
     values = {key: value for key, value in values.items() if key in allowed}
     for key in ("student_action_scale", "residual_scale"):
@@ -134,9 +140,9 @@ def _config_from_student_artifact(artifact, teacher_config):
     try:
         config = ForwardTeacherStudentConfig(**values)
     except (TypeError, ValueError) as exc:
-        raise SystemExit(f"T5 Student config contract is invalid: {exc}") from exc
+        raise SystemExit(f"Phase Student config contract is invalid: {exc}") from exc
     if not config.student_phase_conditioned:
-        raise SystemExit("T5 Student config must enable phase conditioning")
+        raise SystemExit("Phase Student config must enable phase conditioning")
     return config
 
 
@@ -145,9 +151,9 @@ def _validate_bc_teacher_contract(
 ):
     metadata = artifact.metadata
     stage = metadata.get("stage")
-    if stage not in {"T3_BC", "T5_PHASE_BC"}:
+    if stage not in {"T3_BC", "T5_PHASE_BC", "T8_PHASE_BC_NO_PREVIOUS_ACTION"}:
         raise SystemExit(
-            "DAgger requires a Student artifact with stage=T3_BC or stage=T5_PHASE_BC"
+            "Unsupported Student BC artifact stage"
         )
     if int(metadata.get("observation_size", -1)) != config.student_policy_observation_size:
         raise SystemExit("Student observation size does not match its config contract")
@@ -178,16 +184,21 @@ def _validate_bc_teacher_contract(
     ):
         if getattr(config, name) != getattr(teacher_config, name):
             raise SystemExit(f"Student and Teacher configs disagree on {name}")
-    if stage == "T5_PHASE_BC":
+    if stage in {"T5_PHASE_BC", "T8_PHASE_BC_NO_PREVIOUS_ACTION"}:
         oscillator = metadata.get("internal_oscillator", {})
         if not oscillator.get("enabled", False):
-            raise SystemExit("T5 Student metadata must enable the internal oscillator")
+            raise SystemExit("Phase Student metadata must enable the internal oscillator")
         if config.student_internal_state_size != 3:
-            raise SystemExit("T5 Student must expose three controller-owned phase values")
+            raise SystemExit("Phase Student must expose three controller-owned phase values")
 
 
 def _dagger_variant(artifact):
-    if artifact.metadata.get("stage") == "T5_PHASE_BC":
+    stage = artifact.metadata.get("stage")
+    if stage == "T8_PHASE_BC_NO_PREVIOUS_ACTION":
+        raise SystemExit(
+            "Do not add DAgger to the T8 causal ablation before evaluating its BC result"
+        )
+    if stage == "T5_PHASE_BC":
         return {
             "stage_name": "T6_PHASE_DAGGER",
             "terminal_stage": "t6",

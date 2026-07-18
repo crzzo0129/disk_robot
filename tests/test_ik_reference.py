@@ -39,6 +39,16 @@ def test_teacher_student_observation_contract_is_explicit():
     assert phase_config.student_policy_observation_size == 195
     assert phase_config.teacher_observation_size == 231
 
+    no_action_history_config = ForwardTeacherStudentConfig(
+        student_phase_conditioned=True,
+        student_previous_action_input=False,
+    )
+    assert no_action_history_config.student_policy_frame_size == 36
+    assert no_action_history_config.student_policy_sensor_history_size == 144
+    assert no_action_history_config.student_policy_observation_size == 147
+    assert no_action_history_config.student_observation_size == 192
+    assert no_action_history_config.teacher_observation_size == 231
+
 
 def test_reference_can_be_built_from_an_in_memory_structure_variant():
     import mujoco

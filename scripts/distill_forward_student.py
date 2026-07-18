@@ -49,6 +49,14 @@ def parse_args(argv=None):
         action="store_true",
         help="Append controller-owned sin/cos phase and startup blend to the Student observation.",
     )
+    parser.add_argument(
+        "--remove-previous-action-input",
+        action="store_true",
+        help=(
+            "Remove all four previous-action blocks from the Student policy observation "
+            "while preserving the frozen Teacher observation contract."
+        ),
+    )
 
     parser.add_argument("--nominal-vx-tolerance", type=float, default=0.015)
     parser.add_argument("--nominal-failure-tolerance", type=float, default=0.05)
@@ -241,6 +249,8 @@ def main(argv=None):
         raise SystemExit("--nominal-fraction must be in (0, 1)")
     if min(args.rollout_envs, args.rollout_horizon, args.student_updates, args.eval_envs) < 1:
         raise SystemExit("rollout, update, and evaluation counts must be positive")
+    if args.remove_previous_action_input and not args.phase_conditioned:
+        raise SystemExit("--remove-previous-action-input requires --phase-conditioned")
 
     teacher_run, teacher_run_config, teacher_evaluation, selection, params_path = (
         _load_accepted_teacher_run(args.teacher_run)
@@ -253,21 +263,27 @@ def main(argv=None):
         config = replace(
             config,
             student_phase_conditioned=True,
+            student_previous_action_input=not args.remove_previous_action_input,
             student_phase_frequency=reference_spec.frequency,
         )
-    stage_name = "T5_PHASE_BC" if args.phase_conditioned else "T3_BC"
-    terminal_stage = "t5" if args.phase_conditioned else "t3"
-    train_stage = "student_phase_bc" if args.phase_conditioned else "student_bc"
-    dataset_name = (
-        "student_phase_bc_dataset.npz"
-        if args.phase_conditioned
-        else "student_bc_dataset.npz"
-    )
-    policy_name = (
-        "student_policy_phase_bc.npz"
-        if args.phase_conditioned
-        else "student_policy_bc.npz"
-    )
+    if args.remove_previous_action_input:
+        stage_name = "T8_PHASE_BC_NO_PREVIOUS_ACTION"
+        terminal_stage = "t8"
+        train_stage = "student_phase_bc_no_previous_action"
+        dataset_name = "student_phase_bc_no_previous_action_dataset.npz"
+        policy_name = "student_policy_phase_bc_no_previous_action.npz"
+    elif args.phase_conditioned:
+        stage_name = "T5_PHASE_BC"
+        terminal_stage = "t5"
+        train_stage = "student_phase_bc"
+        dataset_name = "student_phase_bc_dataset.npz"
+        policy_name = "student_policy_phase_bc.npz"
+    else:
+        stage_name = "T3_BC"
+        terminal_stage = "t3"
+        train_stage = "student_bc"
+        dataset_name = "student_bc_dataset.npz"
+        policy_name = "student_policy_bc.npz"
     student_observation_key = (
         "student_policy_obs" if args.phase_conditioned else "student_obs"
     )
@@ -276,9 +292,13 @@ def main(argv=None):
         raise SystemExit(f"robot XML does not exist: {xml_path}")
     if args.out is None:
         default_name = (
-            f"student_t5_phase_bc_seed{args.seed}"
-            if args.phase_conditioned
-            else f"student_t3_bc_seed{args.seed}"
+            f"student_t8_phase_bc_no_previous_action_seed{args.seed}"
+            if args.remove_previous_action_input
+            else (
+                f"student_t5_phase_bc_seed{args.seed}"
+                if args.phase_conditioned
+                else f"student_t3_bc_seed{args.seed}"
+            )
         )
         args.out = teacher_run.parent / default_name
     args.out = args.out.expanduser().resolve()
@@ -358,7 +378,8 @@ def main(argv=None):
         f"stage={terminal_stage}_dataset_plan total={args.dataset_samples:,} "
         f"nominal={nominal_samples:,} disturbed={disturbed_samples:,} "
         f"envs={args.rollout_envs} horizon={args.rollout_horizon} "
-        f"phase_conditioned={args.phase_conditioned}",
+        f"phase_conditioned={args.phase_conditioned} "
+        f"previous_action_input={config.student_previous_action_input}",
         flush=True,
     )
     print(
@@ -479,13 +500,20 @@ def main(argv=None):
         "xml_path": str(xml_path),
         "stand_source": "xml:keyframe:stand",
         "observation_size": config.student_policy_observation_size,
-        "sensor_history_size": config.student_observation_size,
+        "sensor_history_size": config.student_policy_sensor_history_size,
+        "teacher_sensor_history_size": config.student_observation_size,
         "internal_state_size": config.student_internal_state_size,
         "observation_contract": (
-            "192 sensor-history values followed by sin_phase, cos_phase, gait_blend"
-            if args.phase_conditioned
-            else "192 sensor-history values"
+            "144 sensor-history values without previous actions, followed by "
+            "sin_phase, cos_phase, gait_blend"
+            if args.remove_previous_action_input
+            else (
+                "192 sensor-history values followed by sin_phase, cos_phase, gait_blend"
+                if args.phase_conditioned
+                else "192 sensor-history values"
+            )
         ),
+        "previous_action_input": config.student_previous_action_input,
         "action_size": config.action_size,
         "hidden_layers": args.student_hidden,
         "action_semantics": "q_target = q_stand + student_action_scale * tanh(policy)",

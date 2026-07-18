@@ -70,6 +70,29 @@ def test_phase_student_keeps_teacher_observation_contract_and_has_no_contact_inp
     assert "student_history, internal_state" in env_source
 
 
+def test_no_previous_action_student_entry_preserves_teacher_history_contract():
+    import sys
+
+    jax_before = sys.modules.get("jax")
+    brax_before = sys.modules.get("brax")
+    from scripts import distill_phase_student_no_previous_action
+
+    assert sys.modules.get("jax") is jax_before
+    assert sys.modules.get("brax") is brax_before
+    wrapper = open(
+        "scripts/distill_phase_student_no_previous_action.py", encoding="utf-8"
+    ).read()
+    env_source = open(
+        "disk_robot_mjx/teacher_student_env.py", encoding="utf-8"
+    ).read()
+    assert '"--phase-conditioned"' in wrapper
+    assert '"--remove-previous-action-input"' in wrapper
+    assert "frames[:, :33]" in env_source
+    assert "frames[:, 45:]" in env_source
+    assert 'student_obs = self._update_student_history(' in env_source
+    assert 'student_policy_obs = self._student_policy_obs(' in env_source
+
+
 def test_phase_diagnosis_compares_teacher_oracle_and_learned_student():
     source = open("scripts/diagnose_phase_student.py", encoding="utf-8").read()
     pipeline_source = open(
@@ -181,6 +204,14 @@ def test_feedback_diagnosis_observation_groups_match_the_195_value_contract():
     assert len(groups["joint_position_history"]) == 48
     assert len(groups["joint_velocity_history"]) == 48
     np.testing.assert_array_equal(groups["phase_clock"], np.arange(192, 195))
+
+    no_action_groups = observation_group_indices(
+        frame_size=36, previous_action_input=False
+    )
+    assert "latest_previous_action" not in no_action_groups
+    assert "previous_action_history" not in no_action_groups
+    assert len(no_action_groups["command_history"]) == 12
+    np.testing.assert_array_equal(no_action_groups["phase_clock"], np.arange(144, 147))
 
 
 def test_feedback_diagnosis_entry_imports_without_jax_and_is_read_only():

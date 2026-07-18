@@ -592,7 +592,68 @@ positive `recovered` value identifies the observation group that causally accoun
 Student policy shift; `jacobian_spectral > 1` for `latest_previous_action` is direct evidence
 of an unstable autoregressive shortcut.
 
-## 18. Commands And Workflow Notes
+The actual feedback diagnosis established the root cause:
+
+```text
+Student oracle-manifold error                  0.002--0.006
+closed-loop error, step 1 / step 2             0.016 / 0.090
+previous-action-history recovered fraction     0.901
+latest-previous-action recovered fraction      0.547
+previous-action-history Jacobian spectral gain 59.832
+latest-previous-action Jacobian spectral gain  22.668
+```
+
+The T5 Student accurately represents the Teacher on the Oracle trajectory, but it learned an
+unstable autoregressive shortcut from the highly correlated previous-action history. Its own
+small action error enters the next observation and is amplified each step. Teacher-label drift
+is too small to explain the effect. This is not a Teacher, phase, direct-action-interface, or
+reset-distribution failure.
+
+## 18. Current Task: T8 Remove Previous-Action Feedback
+
+T8 is a single-variable causal ablation. It keeps the accepted Teacher observation and
+parameters unchanged but removes all four 12-value previous-action blocks from the Student
+policy observation:
+
+```text
+Teacher raw sensor history                  192
+Teacher privileged observation             231
+T8 Student deployable sensor history        144
+T8 Student internal phase state               3
+T8 Student policy observation               147
+```
+
+Teacher data trajectories, direct-action labels, random seeds, network hidden layers, BC
+updates, nominal/disturbed split, and evaluation gates remain identical to T5. Only the
+Student input contract changes. The previous-action values remain in the raw Teacher history,
+so accepted Teacher parameters are still compatible; they are structurally absent from the
+Student network rather than merely zeroed.
+
+Run the technical smoke on the 4090 node:
+
+```bash
+python -m scripts.distill_phase_student_no_previous_action --teacher-run mjx_runs/teacher_t2a_seed0 --smoke --save-dataset --mujoco-gl disable --out mjx_runs/student_t8_phase_bc_no_previous_action_smoke_seed0
+```
+
+Confirm that the source reports `teacher_obs=231 student_obs=147` and the dataset plan reports
+`previous_action_input=False`. Do not judge closed-loop performance from the 20-update smoke.
+If it completes, run the controlled formal experiment:
+
+```bash
+python -m scripts.distill_phase_student_no_previous_action --teacher-run mjx_runs/teacher_t2a_seed0 --save-dataset --strict-acceptance --mujoco-gl disable --out mjx_runs/student_t8_phase_bc_no_previous_action_seed0
+```
+
+Before any DAgger or further tuning, run the same feedback diagnosis on the formal T8 run:
+
+```bash
+python -m scripts.diagnose_phase_student_feedback --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0
+```
+
+T8 artifacts use stage `T8_PHASE_BC_NO_PREVIOUS_ACTION` and policy file
+`student_policy_phase_bc_no_previous_action.npz`. The DAgger entry intentionally rejects this
+stage until the causal BC ablation is evaluated.
+
+## 19. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
 
@@ -607,4 +668,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local test result after the feedback diagnosis implementation is `114 passed`.
+local test result after the T8 structural ablation implementation is `116 passed`.

@@ -157,6 +157,59 @@ def test_t6_entry_requires_phase_conditioning_without_loading_jax():
     assert '"--require-phase-conditioned"' in source
 
 
+def test_t8_artifact_preserves_teacher_contract_and_blocks_premature_dagger(tmp_path):
+    from disk_robot.student_policy import StudentPolicyArtifact
+    from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
+    from scripts.dagger_forward_student import (
+        _config_from_student_artifact,
+        _dagger_variant,
+        _validate_bc_teacher_contract,
+    )
+
+    teacher_config = ForwardTeacherStudentConfig(disturbance_enabled=True)
+    t8_config = ForwardTeacherStudentConfig(
+        disturbance_enabled=True,
+        student_phase_conditioned=True,
+        student_previous_action_input=False,
+    )
+    artifact = StudentPolicyArtifact(
+        params=(
+            (
+                np.zeros(
+                    (t8_config.student_policy_observation_size, t8_config.action_size),
+                    dtype=np.float32,
+                ),
+                np.zeros(t8_config.action_size, dtype=np.float32),
+            ),
+        ),
+        obs_mean=np.zeros(t8_config.student_policy_observation_size, dtype=np.float32),
+        obs_std=np.ones(t8_config.student_policy_observation_size, dtype=np.float32),
+        metadata={
+            "stage": "T8_PHASE_BC_NO_PREVIOUS_ACTION",
+            "observation_size": t8_config.student_policy_observation_size,
+            "action_size": t8_config.action_size,
+            "teacher_selected_step": 123,
+            "teacher_run": str(tmp_path / "teacher"),
+            "config": asdict(t8_config),
+            "internal_oscillator": {"enabled": True},
+        },
+    )
+
+    loaded_config = _config_from_student_artifact(artifact, teacher_config)
+    _validate_bc_teacher_contract(
+        artifact,
+        tmp_path / "teacher",
+        {"selected_step": 123},
+        loaded_config,
+        teacher_config,
+    )
+
+    assert loaded_config.student_policy_observation_size == 147
+    assert loaded_config.teacher_observation_size == 231
+    with pytest.raises(SystemExit, match="Do not add DAgger"):
+        _dagger_variant(artifact)
+
+
 def test_t4_score_prefers_stable_forward_student():
     from scripts.dagger_forward_student import _student_score
 

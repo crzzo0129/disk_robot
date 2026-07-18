@@ -155,7 +155,9 @@ def test_t3_is_bc_only_and_student_eval_reports_recovery_metrics():
     assert "_collect_dagger_dataset" not in t3_source
     assert "ppo.train(" not in t3_source
     assert "from brax.training.acme import running_statistics" in t3_source
-    assert 'stage_name = "T5_PHASE_BC" if args.phase_conditioned else "T3_BC"' in t3_source
+    assert 'stage_name = "T5_PHASE_BC"' in t3_source
+    assert 'stage_name = "T8_PHASE_BC_NO_PREVIOUS_ACTION"' in t3_source
+    assert 'stage_name = "T3_BC"' in t3_source
     assert '"mean_post_push_velocity_error"' in pipeline_source
     assert '"mean_recovery_time"' in pipeline_source
     assert '"push_coverage"' in pipeline_source
