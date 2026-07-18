@@ -119,7 +119,10 @@ def make_forward_teacher_student_env(
                 delay_key,
                 next_rng,
             ) = jax.random.split(rng, 9)
-            if self.role == "student":
+            if self.config.fixed_reset_phase is not None:
+                phase = jp.array(float(self.config.fixed_reset_phase))
+                initial_target = self.stand_q
+            elif self.role == "student":
                 phase = jp.array(0.0)
                 initial_target = self.stand_q
             else:

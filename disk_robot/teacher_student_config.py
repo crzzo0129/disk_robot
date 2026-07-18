@@ -33,6 +33,9 @@ class ForwardTeacherStudentConfig:
     student_previous_action_input: bool = True
     student_phase_frequency: float = 1.2
     student_command_deadzone: float = 0.01
+    # Read-only diagnostics can pin all policy roles to the same controller phase.
+    # None preserves the training behavior (random Teacher phase, zero Student phase).
+    fixed_reset_phase: float | None = None
 
     disturbance_enabled: bool = False
     push_step_min: int = 100

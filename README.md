@@ -67,3 +67,18 @@ the accepted fixed-speed path.
 
 Use `egl` where it is available. On the current RTX 4090 node without EGL, pass
 `--mujoco-gl disable` for headless training and diagnostics.
+
+The next gate is the read-only T8 long-horizon trajectory characterization. Run the MJX
+rollout on the cloud node without a GL context:
+
+```bash
+python -m scripts.characterize_t8_trajectories --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0 --mujoco-gl disable
+```
+
+After copying/synchronizing the generated `trajectory_rollouts.npz`, render its paired IK,
+Teacher, and T8 tracking views on a local MuJoCo machine. `--xml-path` can replace a cloud
+absolute path stored in the rollout:
+
+```powershell
+python -m scripts.characterize_t8_trajectories --mode render --rollout-data mjx_runs\student_t8_phase_bc_no_previous_action_seed0\t8_trajectory_characterization\trajectory_rollouts.npz --xml-path assets\pupper_v3_disk_structure_candidate.xml
+```

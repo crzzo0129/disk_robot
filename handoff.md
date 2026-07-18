@@ -125,7 +125,7 @@ important implementation points are:
   147-dimensional T8 policy;
 - the DAgger entry refuses to silently treat T8 artifacts as the older T5/T6 contract.
 
-The latest local regression result after these changes is:
+The local regression result after the T8 structural ablation changes was:
 
 ```text
 116 passed
@@ -685,6 +685,35 @@ then expand only the one-dimensional forward-speed command.
 
 ### 19.1 Short T8 Characterization Gate
 
+Implementation status (local, 2026-07-18): `scripts/characterize_t8_trajectories.py` now
+implements this read-only gate. It validates the frozen T8 stage and 147-dimensional metadata,
+pins IK/Teacher/Student to identical phase-zero resets, extends the episode length to the
+requested diagnostic horizon, and records per-environment drift, yaw, disk/failure, normalized
+action, control-limit margin, and actuator-force saturation. Four seed batches, 16 environments
+per batch, and 1,500 control steps are the defaults. It saves:
+
+```text
+t8_trajectory_characterization/trajectory_characterization.json
+t8_trajectory_characterization/trajectory_rollouts.npz
+t8_trajectory_characterization/xy_trajectories.svg
+```
+
+The NPZ contains one qpos rollout for each controller so rendering can happen on another
+machine. Run the cloud half on the 4090 without GL:
+
+```bash
+python -m scripts.characterize_t8_trajectories --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0 --mujoco-gl disable
+```
+
+Then render locally, overriding the XML path if the saved cloud absolute path does not exist:
+
+```powershell
+python -m scripts.characterize_t8_trajectories --mode render --rollout-data mjx_runs\student_t8_phase_bc_no_previous_action_seed0\t8_trajectory_characterization\trajectory_rollouts.npz --xml-path assets\pupper_v3_disk_structure_candidate.xml
+```
+
+Local regression after implementing this gate is `120 passed`. The formal MJX rollout result
+is still pending; do not start T9 until its JSON decision and trajectories have been inspected.
+
 The current aggregate nominal result is:
 
 ```text
@@ -778,4 +807,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local test result after the T8 structural ablation implementation is `116 passed`.
+local test result after the T8 trajectory-characterization implementation is `120 passed`.
