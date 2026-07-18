@@ -565,6 +565,33 @@ Interpret the result before choosing another learning algorithm:
 - materially higher Teacher disagreement than Student disagreement for nearby deployable
   observations is evidence that privileged action distillation is not identifiable.
 
+The full audit showed that the Oracle tolerates action noise well, while the T5 Student error
+amplifies from `0.00206` at step 0 to `0.01951` at step 1 and `0.11323` at step 2. Physical
+joint divergence crosses `0.01 rad` at step 2. Teacher label drift remains much smaller than
+the Student error. This rules out a bad reset action and points to excessive local closed-loop
+gain in the Student observation/action feedback path.
+
+`scripts/diagnose_phase_student_feedback.py` performs the next read-only diagnosis. It:
+
+- evaluates the Student on the Oracle trajectory and its own trajectory separately;
+- measures policy-output shift independently from Teacher-label drift;
+- replaces one observation group at a time with its paired Oracle value;
+- reports how much each replacement recovers the Oracle policy output;
+- computes the local Student Jacobian gain for latest/all previous actions, joint position,
+  joint velocity, IMU/body velocity, command, and phase groups.
+
+Run:
+
+```bash
+python -m scripts.diagnose_phase_student_feedback --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t5_phase_bc_seed0
+```
+
+The script defaults to `MUJOCO_GL=disable`, 16 environments, and 12 paired steps. No H200 is
+required and it does not train or modify the policy. Focus on `stage=feedback_group`: a large
+positive `recovered` value identifies the observation group that causally accounts for the
+Student policy shift; `jacobian_spectral > 1` for `latest_previous_action` is direct evidence
+of an unstable autoregressive shortcut.
+
 ## 18. Commands And Workflow Notes
 
 Run local tests from `disk_robot/`:
@@ -580,4 +607,4 @@ backtick continuation syntax. The cloud cannot access the internet, so dependenc
 must already be synchronized before training.
 
 The repository may contain user changes. Do not revert unrelated modifications. The latest
-local test result after the T7 audit implementation is `111 passed`.
+local test result after the feedback diagnosis implementation is `114 passed`.

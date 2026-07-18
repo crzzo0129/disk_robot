@@ -169,3 +169,65 @@ def test_failure_audit_nearest_neighbor_uses_cross_environment_pairs():
     np.testing.assert_allclose(
         report["teacher_label_disagreement_rms"]["mean"], 0.1, atol=1e-7
     )
+
+
+def test_feedback_diagnosis_observation_groups_match_the_195_value_contract():
+    from scripts.diagnose_phase_student_feedback import observation_group_indices
+
+    groups = observation_group_indices()
+
+    np.testing.assert_array_equal(groups["latest_previous_action"], np.arange(33, 45))
+    assert len(groups["previous_action_history"]) == 48
+    assert len(groups["joint_position_history"]) == 48
+    assert len(groups["joint_velocity_history"]) == 48
+    np.testing.assert_array_equal(groups["phase_clock"], np.arange(192, 195))
+
+
+def test_feedback_diagnosis_entry_imports_without_jax_and_is_read_only():
+    import sys
+
+    jax_before = sys.modules.get("jax")
+    brax_before = sys.modules.get("brax")
+    from scripts import diagnose_phase_student_feedback
+
+    assert sys.modules.get("jax") is jax_before
+    assert sys.modules.get("brax") is brax_before
+    args = diagnose_phase_student_feedback.parse_args(
+        ["--teacher-run", "teacher", "--student-run", "student"]
+    )
+    assert args.envs == 16
+    assert args.steps == 12
+    assert args.mujoco_gl == "disable"
+    source = open(
+        "scripts/diagnose_phase_student_feedback.py", encoding="utf-8"
+    ).read()
+    assert "student_on_oracle" in source
+    assert "group_counterfactual" in source
+    assert "local_jacobian" in source
+    assert "_train_student(" not in source
+
+
+def test_feedback_diagnosis_policy_jacobian_matches_finite_difference():
+    from disk_robot.student_policy import StudentPolicyArtifact, apply_student_policy_numpy
+    from scripts.diagnose_phase_student_feedback import _policy_jacobian_numpy
+
+    weight = np.asarray([[0.3, -0.2], [0.1, 0.4]], dtype=np.float32)
+    artifact = StudentPolicyArtifact(
+        params=((weight, np.asarray([0.05, -0.03], dtype=np.float32)),),
+        obs_mean=np.asarray([0.1, -0.2], dtype=np.float32),
+        obs_std=np.asarray([0.5, 2.0], dtype=np.float32),
+        metadata={},
+    )
+    observation = np.asarray([0.2, 0.3], dtype=np.float32)
+    analytic = _policy_jacobian_numpy(artifact, observation)
+    epsilon = 1e-4
+    finite = np.empty_like(analytic)
+    for index in range(2):
+        offset = np.zeros(2, dtype=np.float32)
+        offset[index] = epsilon
+        finite[index] = (
+            apply_student_policy_numpy(artifact, observation + offset)
+            - apply_student_policy_numpy(artifact, observation - offset)
+        ) / (2.0 * epsilon)
+
+    np.testing.assert_allclose(analytic, finite, atol=3e-4, rtol=3e-4)
