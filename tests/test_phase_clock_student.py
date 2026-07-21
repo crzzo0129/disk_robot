@@ -262,3 +262,37 @@ def test_feedback_diagnosis_policy_jacobian_matches_finite_difference():
         ) / (2.0 * epsilon)
 
     np.testing.assert_allclose(analytic, finite, atol=3e-4, rtol=3e-4)
+
+
+def test_long_horizon_bias_audit_separates_oracle_bias_from_closed_loop_drift():
+    from scripts.diagnose_phase_student_feedback import _long_horizon_bias_audit
+
+    steps, envs, actions = 4, 2, 12
+    phase = np.linspace(0.0, 0.75, steps, endpoint=True)[:, None]
+    observations = np.zeros((steps, envs, 147), dtype=np.float32)
+    observations[..., -3] = np.sin(2.0 * np.pi * phase)
+    observations[..., -2] = np.cos(2.0 * np.pi * phase)
+    oracle_label = np.zeros((steps, envs, actions), dtype=np.float32)
+    student_on_oracle = oracle_label.copy()
+    teacher_correction = np.full_like(oracle_label, 0.01)
+    student_action = teacher_correction.copy()
+    student_action[2:, :, 0] += 0.02
+
+    report = _long_horizon_bias_audit(
+        observations,
+        oracle_label,
+        teacher_correction,
+        student_on_oracle,
+        student_action,
+        np.ones(actions),
+        dt=0.5,
+        phase_bins=4,
+        window_edges=[0.0, 1.0, 2.0],
+    )
+
+    assert report["oracle_manifold_action_error"]["rmse"] == 0.0
+    assert report["temporal_windows"][0]["closed_loop_action_error"]["rmse"] == 0.0
+    assert report["temporal_windows"][1]["largest_mean_bias_joint"] == "leg_front_r_1"
+    np.testing.assert_allclose(
+        report["temporal_windows"][1]["largest_mean_bias_rad"], 0.02
+    )

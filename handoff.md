@@ -735,8 +735,37 @@ the Student exceeds Teacher mean absolute lateral drift by `0.02 m`:
 python -m scripts.characterize_t8_trajectories --mode analyze --rollout-data mjx_runs/student_t8_phase_bc_no_previous_action_seed0/t8_trajectory_characterization/trajectory_rollouts.npz
 ```
 
-Local regression after adding the post-processor is `121 passed`. Do not start T9 until the
-time analysis and at least the Student/Teacher tracking videos have been inspected.
+The saved-rollout time analysis completed:
+
+```text
+elapsed       delta forward   delta |lateral|   delta |yaw|   Student worse fraction
+5 s                 -0.0114            +0.0034       +0.0160        0.828
+10 s                -0.0240            +0.0214       +0.0582        1.000
+20 s                -0.0696            +0.1140       +0.1452        1.000
+30 s                -0.1356            +0.1952       +0.1147        1.000
+```
+
+The Student first exceeds the Teacher mean absolute lateral drift by `0.02 m` at `9.8 s`,
+almost exactly at the old 500-step/10-second acceptance horizon. This explains why T8 passed
+the original gate yet fails the long-horizon straightness gate. The error grows smoothly and
+universally rather than exploding early. The yaw difference peaks by 20 seconds and then
+falls while lateral displacement continues accumulating, consistent with a small systematic
+heading bias being integrated into position.
+
+`scripts/diagnose_phase_student_feedback.py` now supports a non-overwriting long-horizon bias
+audit. It extends episode timeout beyond the requested scan and separates Student error on
+the Oracle manifold, Student-vs-online-Teacher error on its own states, and Teacher-label
+drift. It also reports 5/10/20/30-second windows, phase bins, and the largest mean physical
+joint-target bias. Run:
+
+```bash
+python -m scripts.diagnose_phase_student_feedback --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0 --envs 16 --steps 1500 --summary-windows 0 5 10 20 30 --mujoco-gl disable
+```
+
+For a long run it writes `feedback_long_horizon_diagnosis.json` and
+`feedback_long_horizon_trace.npz`, leaving the earlier short feedback artifacts untouched.
+Local regression after this extension is `131 passed`. Do not start T9 until this audit and
+at least the Student/Teacher tracking videos have been inspected.
 
 The current aggregate nominal result is:
 
