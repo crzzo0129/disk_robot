@@ -264,6 +264,59 @@ def test_feedback_diagnosis_policy_jacobian_matches_finite_difference():
     np.testing.assert_allclose(analytic, finite, atol=3e-4, rtol=3e-4)
 
 
+def test_feedback_jacobian_audit_returns_group_statistics():
+    from disk_robot.student_policy import StudentPolicyArtifact
+    from scripts.diagnose_phase_student_feedback import _jacobian_audit
+
+    artifact = StudentPolicyArtifact(
+        params=((np.eye(2, dtype=np.float32), np.zeros(2, dtype=np.float32)),),
+        obs_mean=np.zeros(2, dtype=np.float32),
+        obs_std=np.ones(2, dtype=np.float32),
+        metadata={},
+    )
+    report = _jacobian_audit(
+        artifact,
+        np.zeros((2, 1, 2), dtype=np.float32),
+        {"all": np.arange(2)},
+    )
+
+    assert report is not None
+    assert report["all"]["samples"] == 2
+    np.testing.assert_allclose(report["all"]["spectral_gain"]["mean"], 1.0)
+
+
+def test_feedback_saved_report_mode_does_not_require_mjx_runs(capsys, tmp_path):
+    import json
+    from scripts import diagnose_phase_student_feedback
+
+    report_path = tmp_path / "feedback.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "long_horizon_bias": {
+                    "temporal_windows": [
+                        {
+                            "start_s": 0.0,
+                            "end_s": 5.0,
+                            "oracle_manifold_action_error": {"rmse": 0.001},
+                            "closed_loop_action_error": {"rmse": 0.002},
+                            "teacher_label_drift": {"rmse": 0.0005},
+                            "largest_mean_bias_joint": "leg_front_r_1",
+                            "largest_mean_bias_rad": 0.003,
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    diagnose_phase_student_feedback.main(["--report-in", str(report_path)])
+    output = capsys.readouterr().out
+    assert "stage=feedback_bias_window" in output
+    assert "closed_rmse=0.00200" in output
+
+
 def test_long_horizon_bias_audit_separates_oracle_bias_from_closed_loop_drift():
     from scripts.diagnose_phase_student_feedback import _long_horizon_bias_audit
 

@@ -764,8 +764,19 @@ python -m scripts.diagnose_phase_student_feedback --teacher-run mjx_runs/teacher
 
 For a long run it writes `feedback_long_horizon_diagnosis.json` and
 `feedback_long_horizon_trace.npz`, leaving the earlier short feedback artifacts untouched.
-Local regression after this extension is `131 passed`. Do not start T9 until this audit and
-at least the Student/Teacher tracking videos have been inspected.
+The first cloud invocation completed the 1,500-step rollout and wrote both artifacts, then
+hit a reporting-only `NoneType` exception because the Jacobian loop had accidentally been
+placed after another function's `return`. The function structure is fixed and now has an
+explicit return-contract regression test. Do not rerun the expensive rollout: print the
+already saved bias windows with:
+
+```bash
+python -m scripts.diagnose_phase_student_feedback --report-in mjx_runs/student_t8_phase_bc_no_previous_action_seed0/feedback_long_horizon_diagnosis.json
+```
+
+This saved-report path does not import JAX or modify artifacts. Local regression after the
+fix is `133 passed`. Do not start T9 until these saved window results and at least the
+Student/Teacher tracking videos have been inspected.
 
 The current aggregate nominal result is:
 

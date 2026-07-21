@@ -106,3 +106,9 @@ with the non-training long-horizon feedback audit:
 ```bash
 python -m scripts.diagnose_phase_student_feedback --teacher-run mjx_runs/teacher_t2a_seed0 --student-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0 --envs 16 --steps 1500 --summary-windows 0 5 10 20 30 --mujoco-gl disable
 ```
+
+To reprint the window summary from an existing report without JAX or another rollout:
+
+```bash
+python -m scripts.diagnose_phase_student_feedback --report-in mjx_runs/student_t8_phase_bc_no_previous_action_seed0/feedback_long_horizon_diagnosis.json
+```

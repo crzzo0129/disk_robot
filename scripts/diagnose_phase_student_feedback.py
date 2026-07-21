@@ -33,8 +33,14 @@ def parse_args(argv=None):
             "Student action error into closed-loop divergence. No policy is trained."
         )
     )
-    parser.add_argument("--teacher-run", type=Path, required=True)
-    parser.add_argument("--student-run", type=Path, required=True)
+    parser.add_argument("--teacher-run", type=Path)
+    parser.add_argument("--student-run", type=Path)
+    parser.add_argument(
+        "--report-in",
+        type=Path,
+        default=None,
+        help="Print a previously saved long-horizon report without JAX or another rollout.",
+    )
     parser.add_argument("--xml-path", type=Path, default=None)
     parser.add_argument("--envs", type=int, default=16)
     parser.add_argument("--steps", type=int, default=12)
@@ -214,6 +220,21 @@ def _jacobian_audit(artifact, observations, groups, max_steps=6):
     reports = {
         name: {"spectral": [], "frobenius": []} for name in groups
     }
+    for observation in selected:
+        derivative = _policy_jacobian_numpy(artifact, observation)
+        for name, indices in groups.items():
+            group_derivative = derivative[indices, :]
+            singular_values = np.linalg.svd(group_derivative, compute_uv=False)
+            reports[name]["spectral"].append(float(singular_values[0]))
+            reports[name]["frobenius"].append(float(np.linalg.norm(group_derivative)))
+    return {
+        name: {
+            "samples": len(values["spectral"]),
+            "spectral_gain": _array_stats(values["spectral"]),
+            "frobenius_gain": _array_stats(values["frobenius"]),
+        }
+        for name, values in reports.items()
+    }
 
 
 def _long_horizon_bias_audit(
@@ -339,25 +360,40 @@ def _long_horizon_bias_audit(
             "note": "Raw joint coordinates have mirrored axes; this is an asymmetry flag, not a yaw-moment estimate.",
         },
     }
-    for observation in selected:
-        derivative = _policy_jacobian_numpy(artifact, observation)
-        for name, indices in groups.items():
-            group_derivative = derivative[indices, :]
-            singular_values = np.linalg.svd(group_derivative, compute_uv=False)
-            reports[name]["spectral"].append(float(singular_values[0]))
-            reports[name]["frobenius"].append(float(np.linalg.norm(group_derivative)))
-    return {
-        name: {
-            "samples": len(values["spectral"]),
-            "spectral_gain": _array_stats(values["spectral"]),
-            "frobenius_gain": _array_stats(values["frobenius"]),
-        }
-        for name, values in reports.items()
-    }
 
 
+def _print_bias_windows(report):
+    bias = report.get("long_horizon_bias")
+    if not isinstance(bias, dict) or not isinstance(bias.get("temporal_windows"), list):
+        raise SystemExit("saved report has no long_horizon_bias.temporal_windows")
+    for window in bias["temporal_windows"]:
+        print(
+            "stage=feedback_bias_window "
+            f"start_s={window['start_s']:.1f} end_s={window['end_s']:.1f} "
+            f"oracle_rmse={window['oracle_manifold_action_error']['rmse']:.5f} "
+            f"closed_rmse={window['closed_loop_action_error']['rmse']:.5f} "
+            f"label_drift={window['teacher_label_drift']['rmse']:.5f} "
+            f"largest_joint={window['largest_mean_bias_joint']} "
+            f"bias_rad={window['largest_mean_bias_rad']:+.6f}",
+            flush=True,
+        )
 def main(argv=None):
     args = parse_args(argv)
+    if args.report_in is not None:
+        try:
+            saved_report = json.loads(
+                args.report_in.expanduser().resolve().read_text(encoding="utf-8")
+            )
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"could not read saved feedback report: {exc}") from exc
+        _print_bias_windows(saved_report)
+        print(
+            f"stage=feedback_saved_report_complete report={args.report_in.expanduser().resolve()}",
+            flush=True,
+        )
+        return
+    if args.teacher_run is None or args.student_run is None:
+        raise SystemExit("--teacher-run and --student-run are required unless --report-in is used")
     if args.envs < 2 or args.steps < 3 or args.phase_bins < 1:
         raise SystemExit("--envs must be at least 2, --steps at least 3, and --phase-bins positive")
     if len(args.summary_windows) < 2:
@@ -540,17 +576,7 @@ def main(argv=None):
             f"jacobian_spectral={jacobian[name]['spectral_gain']['mean']:.3f}",
             flush=True,
         )
-    for window in long_horizon_bias["temporal_windows"]:
-        print(
-            "stage=feedback_bias_window "
-            f"start_s={window['start_s']:.1f} end_s={window['end_s']:.1f} "
-            f"oracle_rmse={window['oracle_manifold_action_error']['rmse']:.5f} "
-            f"closed_rmse={window['closed_loop_action_error']['rmse']:.5f} "
-            f"label_drift={window['teacher_label_drift']['rmse']:.5f} "
-            f"largest_joint={window['largest_mean_bias_joint']} "
-            f"bias_rad={window['largest_mean_bias_rad']:+.6f}",
-            flush=True,
-        )
+    _print_bias_windows(report)
     print(
         f"stage=feedback_diagnosis_complete report={output_path} trace={trace_path}",
         flush=True,
