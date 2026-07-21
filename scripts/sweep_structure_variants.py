@@ -10,9 +10,15 @@ from pathlib import Path
 import numpy as np
 
 from disk_robot.ik_reference import IKReferenceSpec, build_ik_reference_from_model
+from disk_robot.model_paths import BASE_MODEL_XML
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.structure_variants import StructureVariant, apply_structure_variant
-from disk_robot_mjx.teacher_student_env import DEFAULT_XML
+
+
+# StructureVariant values are absolute relative to the unscaled Pupper model.  Do not
+# import the training environment default here: it points at the already-scaled selected
+# candidate, which would compound leg_scale during a new sweep.
+DEFAULT_XML = BASE_MODEL_XML
 
 
 def parse_args(argv=None):

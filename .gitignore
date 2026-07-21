@@ -10,6 +10,8 @@ __pycache__/
 venv/
 env/
 .codex-python-packages/
+build/
+*.egg-info/
 
 # Training outputs and experiment artifacts
 outputs/

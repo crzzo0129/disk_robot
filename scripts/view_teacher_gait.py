@@ -19,9 +19,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from disk_robot.walk_config import WalkTaskConfig
 from disk_robot.walk_env import DiskRobotWalkEnv
+from disk_robot.model_paths import ACTIVE_MODEL_XML
 
 
-DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+DEFAULT_XML = ACTIVE_MODEL_XML
 
 
 def parse_args(argv=None):

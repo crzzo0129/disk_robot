@@ -30,7 +30,9 @@ def parse_args(argv=None):
             "and T8 on paired phase-zero resets, then optionally render saved qpos locally."
         )
     )
-    parser.add_argument("--mode", choices=("rollout", "render", "all"), default="rollout")
+    parser.add_argument(
+        "--mode", choices=("rollout", "analyze", "render", "all"), default="rollout"
+    )
     parser.add_argument("--teacher-run", type=Path)
     parser.add_argument("--student-run", type=Path)
     parser.add_argument("--xml-path", type=Path, default=None)
@@ -45,6 +47,13 @@ def parse_args(argv=None):
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--video-width", type=int, default=960)
     parser.add_argument("--video-height", type=int, default=540)
+    parser.add_argument(
+        "--analysis-windows",
+        type=float,
+        nargs="+",
+        default=[5.0, 10.0, 20.0, 30.0],
+        help="Elapsed seconds summarized by analyze mode.",
+    )
     return parser.parse_args(argv)
 
 
@@ -210,6 +219,132 @@ def characterize_gate(summaries):
             "force_saturation_fraction": 0.01,
         },
     }
+
+
+def analyze_time_profiles(trajectories, *, dt, windows):
+    """Summarizes how paired straightness errors grow without requiring JAX/MJX."""
+
+    horizon = min(np.asarray(trajectories[name]["xy"]).shape[0] for name in POLICIES)
+    if horizon < 1 or dt <= 0.0:
+        raise ValueError("saved trajectories need a positive horizon and dt")
+    selected = sorted({min(max(int(round(value / dt)), 1), horizon) for value in windows})
+    selected.append(horizon)
+    selected = sorted(set(selected))
+    profiles = {}
+    per_policy_series = {}
+    for name in POLICIES:
+        xy = np.asarray(trajectories[name]["xy"], dtype=np.float64)[:horizon]
+        yaw = np.unwrap(
+            np.asarray(trajectories[name]["yaw"], dtype=np.float64)[:horizon], axis=0
+        )
+        origin_xy = xy[0]
+        origin_yaw = yaw[0]
+        dx_series = xy[..., 0] - origin_xy[:, 0]
+        dy_series = xy[..., 1] - origin_xy[:, 1]
+        yaw_series = yaw - origin_yaw
+        per_policy_series[name] = (dx_series, dy_series, yaw_series)
+        entries = []
+        for count in selected:
+            index = count - 1
+            dx = dx_series[index]
+            dy = dy_series[index]
+            yaw_change = yaw_series[index]
+            entries.append(
+                {
+                    "steps": int(count),
+                    "elapsed_s": float(count * dt),
+                    "mean_forward_displacement_m": float(np.mean(dx)),
+                    "mean_lateral_displacement_m": float(np.mean(dy)),
+                    "mean_absolute_lateral_displacement_m": float(np.mean(np.abs(dy))),
+                    "lateral_displacement_std_m": float(np.std(dy)),
+                    "positive_lateral_fraction": float(np.mean(dy > 0.0)),
+                    "mean_absolute_yaw_change_rad": float(np.mean(np.abs(yaw_change))),
+                    "mean_drift_ratio": float(
+                        np.mean(np.abs(dy) / np.maximum(np.abs(dx), 1e-6))
+                    ),
+                }
+            )
+        profiles[name] = entries
+
+    paired = []
+    for position, count in enumerate(selected):
+        index = count - 1
+        teacher_dx, teacher_dy, teacher_yaw = per_policy_series["teacher"]
+        student_dx, student_dy, student_yaw = per_policy_series["student"]
+        paired.append(
+            {
+                "steps": int(count),
+                "elapsed_s": float(count * dt),
+                "student_minus_teacher_forward_m": float(
+                    np.mean(student_dx[index] - teacher_dx[index])
+                ),
+                "student_minus_teacher_signed_lateral_m": float(
+                    np.mean(student_dy[index] - teacher_dy[index])
+                ),
+                "student_minus_teacher_absolute_lateral_m": float(
+                    np.mean(np.abs(student_dy[index]) - np.abs(teacher_dy[index]))
+                ),
+                "student_minus_teacher_absolute_yaw_rad": float(
+                    np.mean(np.abs(student_yaw[index]) - np.abs(teacher_yaw[index]))
+                ),
+                "student_more_lateral_fraction": float(
+                    np.mean(np.abs(student_dy[index]) > np.abs(teacher_dy[index]))
+                ),
+            }
+        )
+
+    student_abs = np.mean(np.abs(per_policy_series["student"][1]), axis=1)
+    teacher_abs = np.mean(np.abs(per_policy_series["teacher"][1]), axis=1)
+    excess = student_abs - teacher_abs
+    candidates = np.flatnonzero(excess > 0.02)
+    onset_step = int(candidates[0] + 1) if candidates.size else None
+    return {
+        "dt": float(dt),
+        "horizon_steps": int(horizon),
+        "duration_s": float(horizon * dt),
+        "profiles": profiles,
+        "paired_student_minus_teacher": paired,
+        "student_excess_abs_lateral_2cm_onset_step": onset_step,
+        "student_excess_abs_lateral_2cm_onset_s": (
+            float(onset_step * dt) if onset_step is not None else None
+        ),
+    }
+
+
+def analyze_saved_rollout(path, out=None, windows=(5.0, 10.0, 20.0, 30.0)):
+    path = path.expanduser().resolve()
+    with np.load(path) as archive:
+        metadata = json.loads(str(archive["metadata_json"].item()))
+        trajectories = {
+            name: {
+                "xy": archive[f"{name}_xy"].copy(),
+                "yaw": archive[f"{name}_yaw"].copy(),
+            }
+            for name in POLICIES
+        }
+    report = analyze_time_profiles(
+        trajectories, dt=float(metadata["dt"]), windows=windows
+    )
+    output_dir = out.expanduser().resolve() if out is not None else path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_path = output_dir / "trajectory_time_analysis.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    for entry in report["paired_student_minus_teacher"]:
+        print(
+            f"stage=t8_time_analysis elapsed_s={entry['elapsed_s']:.1f} "
+            f"delta_forward={entry['student_minus_teacher_forward_m']:+.4f} "
+            f"delta_lateral_abs={entry['student_minus_teacher_absolute_lateral_m']:+.4f} "
+            f"delta_yaw_abs={entry['student_minus_teacher_absolute_yaw_rad']:+.4f} "
+            f"student_more_lateral={entry['student_more_lateral_fraction']:.3f}",
+            flush=True,
+        )
+    print(
+        "stage=t8_time_analysis_result "
+        f"excess_2cm_onset_s={report['student_excess_abs_lateral_2cm_onset_s']} "
+        f"report={report_path}",
+        flush=True,
+    )
+    return report_path
 
 
 def _rollout_policy(jax, jp, env, kind, teacher_policy, student_policy, seed, envs, steps):
@@ -482,6 +617,10 @@ def main(argv=None):
     rollout_path = None
     if args.mode in ("rollout", "all"):
         rollout_path = run_rollout(args)
+    if args.mode == "analyze":
+        if args.rollout_data is None:
+            raise SystemExit("--rollout-data is required for analyze mode")
+        analyze_saved_rollout(args.rollout_data, args.out, args.analysis_windows)
     if args.mode in ("render", "all"):
         selected = rollout_path or args.rollout_data
         if selected is None:

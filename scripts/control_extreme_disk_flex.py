@@ -4,9 +4,9 @@ import threading
 import time
 from pathlib import Path
 
+from disk_robot.model_paths import LEGACY_EXTREME_XML
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme.xml"
+XML_PATH = LEGACY_EXTREME_XML
 
 PAIR_ACTUATORS = {
     "front": ("fl_hip_flex_act", "fr_hip_flex_act"),

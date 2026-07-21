@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from disk_robot.ik_reference import IKReferenceSpec, IKReferenceTable, build_ik_reference, interpolate_reference_jax
+from disk_robot.model_paths import ACTIVE_MODEL_XML
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_structure_candidate.xml"
+DEFAULT_XML = ACTIVE_MODEL_XML
 
 
 def make_forward_teacher_student_env(

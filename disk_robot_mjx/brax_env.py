@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from disk_robot.gait import PUPPER_FORWARD_TEACHER, leg_phase_offsets, make_open_loop_targets_jax
+from disk_robot.model_paths import ACTIVE_MODEL_XML, PROJECT_ROOT
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.walk_config import WalkTaskConfig
 from disk_robot.walk_reward import REWARD_TERM_NAMES, reward_terms
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TRAIN_XML_PATH = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+TRAIN_XML_PATH = ACTIVE_MODEL_XML
 XML_PATH = TRAIN_XML_PATH
 
 

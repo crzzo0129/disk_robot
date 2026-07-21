@@ -59,6 +59,8 @@
         <mesh name="LegAssemblyForFlangedv26_013" file="LegAssemblyForFlangedv26_013.stl" scale="1 -1 1" />
         <mesh name="LegAssemblyForFlangedv26_014" file="LegAssemblyForFlangedv26_014.stl" scale="0.85 0.85 -0.85" />
         <mesh name="LegAssemblyForFlangedv26_015" file="LegAssemblyForFlangedv26_015.stl" scale="0.85 0.85 -0.85" />
+        <mesh name="Lowerleg_New" file="Lowerleg_New.STL" scale="0.001 0.001 0.001" />
+        <mesh name="Upperleg" file="Upperleg.STL" scale="0.001 0.001 0.001" />
     </asset>
     <worldbody>
         <body name="base_link" pos="0 0 0.13" gravcomp="0">
@@ -74,7 +76,7 @@
                     <inertial pos="0 -0.047061865 0.076355755" quat="0.903877 0.427791 0 0" mass="0.186" diaginertia="0.000224348532 0.000193565697 9.23304425e-05" />
                     <joint name="leg_front_r_2" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />
                     <geom size="0.025" pos="0 -0.0696065 0.0965192" quat="0.707105 0 0.707108 0" type="sphere" class="collision" />
-                    <geom pos="-0.0238 0 0" quat="-2.93388e-06 0.707108 2.26082e-06 0.707106" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_002" />
+                    <!-- <geom pos="-0.0238 0 0" quat="-2.93388e-06   0.707108   2.26082e-06   0.707106" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="LegAssemblyForFlangedv26_002" /> -->
                     <body name="leg_front_r_3" pos="0 -0.0696065 0.0965192" quat="0.707105 0 0.707108 0" gravcomp="0">
                         <inertial pos="0.043894935 -0.04070446 0.02081208" quat="0.270598 0.653281 -0.270598 0.653281" mass="0.05" diaginertia="9.92649975e-05 9.7330865e-05 7.0903549e-06" />
                         <joint name="leg_front_r_3" pos="0 0 0" axis="0 0 1" range="-3.141593 3.141593" />

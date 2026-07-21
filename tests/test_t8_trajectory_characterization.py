@@ -75,6 +75,27 @@ def test_characterization_gate_routes_student_only_regression_to_diagnosis():
     assert gate["recommendation"] == "diagnose_t8_retention_before_t9"
 
 
+def test_saved_trajectory_time_analysis_exposes_when_student_drift_accumulates():
+    from scripts.characterize_t8_trajectories import analyze_time_profiles
+
+    teacher = _trajectory([0.01, 0.01])
+    student = _trajectory([0.05, 0.05])
+    report = analyze_time_profiles(
+        {
+            "ik": {"xy": teacher["xy"], "yaw": teacher["yaw"]},
+            "teacher": {"xy": teacher["xy"], "yaw": teacher["yaw"]},
+            "student": {"xy": student["xy"], "yaw": student["yaw"]},
+        },
+        dt=0.5,
+        windows=[0.5, 1.0, 2.0],
+    )
+
+    assert report["student_excess_abs_lateral_2cm_onset_s"] == 1.5
+    final = report["paired_student_minus_teacher"][-1]
+    np.testing.assert_allclose(final["student_minus_teacher_absolute_lateral_m"], 0.04)
+    assert final["student_more_lateral_fraction"] == 1.0
+
+
 def test_environment_has_opt_in_fixed_phase_without_changing_training_default():
     from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
 

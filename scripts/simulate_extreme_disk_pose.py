@@ -11,11 +11,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from disk_robot.model_paths import LEGACY_EXTREME_TRAIN_XML, ROLLING_PROTOTYPE_XML
 from disk_robot.video_recorder import MujocoVideoRecorder
 
 
-XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme_train.xml"
-PUPPER_XML_PATH = REPO_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+XML_PATH = LEGACY_EXTREME_TRAIN_XML
+PUPPER_XML_PATH = ROLLING_PROTOTYPE_XML
 DEFAULT_FROM_KEYFRAME = "walk_stand"
 DEFAULT_MIDDLE_KEYFRAME = "stand"
 DEFAULT_TO_KEYFRAME = "folded"

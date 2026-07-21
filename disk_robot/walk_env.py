@@ -5,13 +5,13 @@ from pathlib import Path
 import numpy as np
 
 from disk_robot.gait import PUPPER_FORWARD_TEACHER, make_open_loop_targets
+from disk_robot.model_paths import ACTIVE_MODEL_XML
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.walk_config import WalkTaskConfig
 from disk_robot.walk_reward import WalkReward, WalkRewardInputs, compute_walk_reward
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+DEFAULT_XML = ACTIVE_MODEL_XML
 
 
 class DiskRobotWalkEnv:

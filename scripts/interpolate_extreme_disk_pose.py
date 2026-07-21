@@ -4,10 +4,10 @@ import threading
 import time
 from pathlib import Path
 
+from disk_robot.model_paths import LEGACY_EXTREME_TRAIN_XML, ROLLING_PROTOTYPE_XML
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-XML_PATH = REPO_ROOT / "assets" / "disk_quadruped_extreme_train.xml"
-PUPPER_XML_PATH = REPO_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+XML_PATH = LEGACY_EXTREME_TRAIN_XML
+PUPPER_XML_PATH = ROLLING_PROTOTYPE_XML
 DEFAULT_FROM_KEYFRAME = "stand"
 DEFAULT_TO_KEYFRAME = "folded"
 

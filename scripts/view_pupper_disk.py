@@ -3,9 +3,9 @@ import argparse
 import time
 from pathlib import Path
 
+from disk_robot.model_paths import ACTIVE_MODEL_XML
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-XML_PATH = REPO_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+XML_PATH = ACTIVE_MODEL_XML
 
 
 def parse_args(argv=None):

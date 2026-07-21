@@ -21,12 +21,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from disk_robot.ik_gait import FootSpaceIKGait, FootTrajectoryParams
 from disk_robot.ik_reference import IKReferenceSpec, build_ik_reference_from_model
 from disk_robot.gait_speed import MAX_CALIBRATED_FORWARD_SPEED, plan_forward_gait
+from disk_robot.model_paths import ACTIVE_MODEL_XML
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.structure_variants import StructureVariant, apply_structure_variant
 from disk_robot.video_recorder import MujocoVideoRecorder
 
 
-DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+DEFAULT_XML = ACTIVE_MODEL_XML
 PUPPER_DEFAULT_POSE = np.array(
     (0.26, 0.0, -0.52, -0.26, 0.0, 0.52, 0.26, 0.0, -0.52, -0.26, 0.0, 0.52),
     dtype=np.float64,

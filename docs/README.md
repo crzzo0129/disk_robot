@@ -18,6 +18,8 @@
 - [design_extreme_disk_quadruped.md](design_extreme_disk_quadruped.md)：极端圆盘机身机器狗的机械与 MJCF 建模原则。
 - [pupper_vs_disk_robot_xml_geometry.md](pupper_vs_disk_robot_xml_geometry.md)：Pupper 与 disk_robot 的 XML、尺寸、碰撞和惯量对比。
 - [structure_variant_study.md](structure_variant_study.md)：腿长、髋距和圆盘半径的结构扫描、候选尺寸与 folded 包络。
+- [structure_variant_study_zh.md](structure_variant_study_zh.md)：结构参数研究的中文版与复现步骤。
+- [rolling_structure_com_study_zh.md](rolling_structure_com_study_zh.md)：结构、圆盘本体质心与整机质心对轴向滚动的联合扫描。
 
 ## 约定
 

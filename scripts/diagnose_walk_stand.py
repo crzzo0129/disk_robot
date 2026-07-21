@@ -6,11 +6,11 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from disk_robot.model_paths import ACTIVE_MODEL_XML
 from disk_robot.model_contract import FOOT_BODY_NAMES, resolve_model_contract
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_XML = PROJECT_ROOT / "assets" / "pupper_v3_disk_visual.xml"
+DEFAULT_XML = ACTIVE_MODEL_XML
 
 
 def _convex_polygon_area(points: np.ndarray) -> float:

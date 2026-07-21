@@ -6,15 +6,18 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from disk_robot.structure_variants import LEG_ROOT_NAMES, StructureVariant, disk_inertia
-from disk_robot_mjx.teacher_student_env import DEFAULT_XML
+from disk_robot.model_paths import ACTIVE_MODEL_XML, BASE_MODEL_XML
 
 
-DEFAULT_OUTPUT = DEFAULT_XML.with_name("pupper_v3_disk_structure_candidate.xml")
+# Generation must always start from the unscaled model.  Using the training environment
+# default here is unsafe because that path is the generated candidate itself.
+DEFAULT_SOURCE = BASE_MODEL_XML
+DEFAULT_OUTPUT = ACTIVE_MODEL_XML
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=Path, default=DEFAULT_XML)
+    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--hip-y", type=float, default=0.09)
     parser.add_argument("--leg-scale", type=float, default=0.85)

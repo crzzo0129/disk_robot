@@ -4,9 +4,9 @@ import argparse
 from pathlib import Path
 from typing import Iterable
 
+from disk_robot.model_paths import LEGACY_EXTREME_XML
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_XML = REPO_ROOT / "assets" / "disk_quadruped_extreme.xml"
+DEFAULT_XML = LEGACY_EXTREME_XML
 KEYFRAME_NAMES = ("stand", "folded")
 FOOT_GEOMS = ("fl_foot", "fr_foot", "hl_foot", "hr_foot")
 JOINT_NAMES = (

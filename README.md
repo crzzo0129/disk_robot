@@ -9,6 +9,17 @@ MuJoCo model and phase-1 tools for an extreme disk-body quadruped. The robot kee
 - `tests/`: lightweight regression tests for the phase-1 model and tools
 - `docs/`: current training specification, design notes, commands, and TODOs
 
+## Which XML is current?
+
+Use **`assets/pupper_v3_disk_structure_candidate.xml`** for normal simulation, training,
+and evaluation. Runtime defaults are centralized in `disk_robot/model_paths.py`.
+
+- `pupper_v3_disk_visual.xml` is the unscaled source used by structure/COM sweeps and by
+  specialized rolling-keyframe prototypes that are not part of the active training model.
+- `disk_quadruped_extreme.xml` and `disk_quadruped_extreme_train.xml` are retained legacy
+  prototypes used only by their dedicated pose/flex tools.
+- See `assets/README.md` for the complete model-file contract.
+
 ## Quick Start
 
 From this project root:
@@ -27,7 +38,7 @@ python -m scripts.walk_smoke --steps 100 --policy zero
 python -m scripts.walk_smoke --steps 100 --policy random
 ```
 
-The current phase-1 baseline is `assets/disk_quadruped_extreme.xml` with two manually calibrated keyframes:
+The legacy phase-1 pose prototype is `assets/disk_quadruped_extreme.xml` with two manually calibrated keyframes:
 
 - `stand`: temporary standard standing pose.
 - `folded`: temporary folded pose for rolling preparation.
@@ -81,4 +92,10 @@ absolute path stored in the rollout:
 
 ```powershell
 python -m scripts.characterize_t8_trajectories --mode render --rollout-data mjx_runs\student_t8_phase_bc_no_previous_action_seed0\t8_trajectory_characterization\trajectory_rollouts.npz --xml-path assets\pupper_v3_disk_structure_candidate.xml
+```
+
+The saved rollout can also be analyzed without JAX or rerunning MJX:
+
+```bash
+python -m scripts.characterize_t8_trajectories --mode analyze --rollout-data mjx_runs/student_t8_phase_bc_no_previous_action_seed0/t8_trajectory_characterization/trajectory_rollouts.npz
 ```

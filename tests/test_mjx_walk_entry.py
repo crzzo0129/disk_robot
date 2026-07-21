@@ -16,7 +16,7 @@ def test_mjx_walk_train_defaults_to_pupper_forward_profile():
     assert args.envs == 128
     assert args.episode_length == 128
     assert args.mujoco_gl == "egl"
-    assert args.xml_path.name == "pupper_v3_disk_visual.xml"
+    assert args.xml_path.name == "pupper_v3_disk_structure_candidate.xml"
     assert args.command_profile == "forward"
 
 

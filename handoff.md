@@ -711,8 +711,32 @@ Then render locally, overriding the XML path if the saved cloud absolute path do
 python -m scripts.characterize_t8_trajectories --mode render --rollout-data mjx_runs\student_t8_phase_bc_no_previous_action_seed0\t8_trajectory_characterization\trajectory_rollouts.npz --xml-path assets\pupper_v3_disk_structure_candidate.xml
 ```
 
-Local regression after implementing this gate is `120 passed`. The formal MJX rollout result
-is still pending; do not start T9 until its JSON decision and trajectories have been inspected.
+The formal 4-seed-batch, 64-environment, 1,500-step MJX rollout completed on the 4090:
+
+```text
+policy      forward m   mean |lateral| m   lateral std m   mean |yaw| rad
+IK             2.5769              0.2000          0.1873           0.2253
+Teacher        2.4831              0.4060          0.0522           0.3786
+T8 Student     2.3475              0.6012          0.0423           0.4933
+```
+
+All three had zero failure, zero disk-contact environments, and zero force saturation. The
+gate correctly returned `diagnose_t8_retention_before_t9`: the Student adds about `0.195 m`
+mean absolute lateral drift beyond the paired Teacher over 30 seconds and loses about
+`0.136 m` forward distance. Teacher and Student both have low lateral standard deviation
+relative to their mean absolute drift, which suggests systematic one-sided accumulation;
+the exact signed direction and per-window onset must be read from the saved trajectory.
+
+An `analyze` mode now post-processes the existing NPZ without JAX or another rollout. It
+reports 5/10/20/30-second profiles, paired Student-minus-Teacher drift/yaw, and the first time
+the Student exceeds Teacher mean absolute lateral drift by `0.02 m`:
+
+```bash
+python -m scripts.characterize_t8_trajectories --mode analyze --rollout-data mjx_runs/student_t8_phase_bc_no_previous_action_seed0/t8_trajectory_characterization/trajectory_rollouts.npz
+```
+
+Local regression after adding the post-processor is `121 passed`. Do not start T9 until the
+time analysis and at least the Student/Teacher tracking videos have been inspected.
 
 The current aggregate nominal result is:
 
