@@ -229,10 +229,11 @@ def _reset_at_deploy_phase(env, jp, rng):
     state = env.reset(rng)
     phase = jp.array(0.0)
     gait_blend = jp.array(0.0)
-    ik_target = env._blended_ik_target(phase, gait_blend)
+    command = state.info.get("command", env.command)
+    ik_target = env._blended_ik_target(phase, gait_blend, command[0])
     contacts = env._foot_contacts(state.pipeline_state)
     student_policy_obs = env._student_policy_obs(
-        state.info["student_obs"], phase, gait_blend
+        state.info["student_obs"], phase, gait_blend, command
     )
     teacher_obs = env._teacher_obs(
         state.pipeline_state,

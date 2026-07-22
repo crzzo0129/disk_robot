@@ -775,8 +775,36 @@ python -m scripts.diagnose_phase_student_feedback --report-in mjx_runs/student_t
 ```
 
 This saved-report path does not import JAX or modify artifacts. Local regression after the
-fix is `133 passed`. Do not start T9 until these saved window results and at least the
-Student/Teacher tracking videos have been inspected.
+fix is `133 passed`. The saved window results below close the learning-failure diagnosis;
+Student/Teacher tracking videos remain a physical-QA task.
+
+The recovered long-horizon bias windows were:
+
+```text
+window       Oracle RMSE   closed RMSE   label drift   largest mean target bias
+0--5 s          0.00238       0.00248        0.00244   back-left joint 2, +0.000126 rad
+5--10 s         0.00182       0.00169        0.00181   back-left joint 2, +0.000124 rad
+10--20 s        0.00196       0.00223        0.00211   back-left joint 2, +0.000114 rad
+20--30 s        0.00230       0.00273        0.00250   back-left joint 2, +0.000118 rad
+```
+
+This rules out a delayed T5-style feedback instability: closed-loop action error remains
+bounded near `0.002` for all 30 seconds and is already comparable on the Oracle manifold.
+The largest time-mean physical joint-target bias is only about `1.2e-4 rad`, so there is no
+evidence for a single bad joint or a useful manual offset. The long-horizon lateral error is
+the integral of small, bounded, phase-structured multijoint approximation/trajectory
+differences. Teacher-label drift is the same order and does not grow explosively either.
+
+Decision: freeze T8 as the fixed-speed regression anchor and proceed to T9 steady-speed
+command conditioning. Do not run another fixed-speed BC/DAgger tuning loop. T9 acceptance
+must add what the old 500-step gate missed:
+
+1. evaluate every speed for at least 1,500 control steps (30 seconds);
+2. report signed/absolute lateral displacement, path angle, yaw change, and yaw-rate bias;
+3. at `vx=0.08`, compare both the old 500-step metrics and the new 1,500-step trajectory
+   metrics against frozen T8 and the paired Teacher;
+4. treat small bounded action error separately from unstable covariate drift;
+5. retain the saved tracking-video review as physical QA, not as a reason to keep tuning T8.
 
 The current aggregate nominal result is:
 
@@ -819,6 +847,74 @@ Decision gate:
   issue and carry the straightness metric into T9 rather than blindly tuning BC.
 
 ### 19.2 T9 One-Dimensional Command Conditioning
+
+Implementation status (local, 2026-07-22): the first episode-fixed T9 stage is implemented.
+It intentionally does not include within-episode stop/start transitions yet.
+
+Core semantics:
+
+```text
+speed anchors                         0.00, 0.04, 0.06, 0.08, 0.10 m/s
+Teacher raw observation               231 (unchanged size, newly trained policy)
+T9 physical history                   4 * 33 = 132
+one current command                   3
+controller phase/blend                3
+T9 Student policy observation         138
+previous-action input                 absent
+repeated command history              absent from Student policy
+```
+
+`command` is now episode state, sampled once at reset and held fixed. The Teacher IK target
+comes from a calibrated multi-speed reference bank and interpolates by the actual episode
+command. The zero-speed entry is exactly `stand`; its phase is frozen, blend remains zero,
+and the forward-progress reward is disabled so stop is not trained to creep. Fixed-speed
+T2a/T8 defaults and their 231/147-dimensional contracts remain unchanged.
+
+New stages and artifacts:
+
+1. `scripts.train_t9_forward_teacher` trains only a new robust command-conditioned PPO
+   Teacher. It never distills inline and never writes T2a/T8 directories. Its aggregate result
+   is forcibly marked `accepted=false`, `grid_validation_pending=true`.
+2. `scripts.evaluate_t9_teacher_grid` evaluates every anchor independently in nominal and
+   disturbed 500-step rollouts plus nominal 1,500-step trajectory/force checks. Only this
+   stage may set the T9 Teacher `accepted=true`.
+3. `scripts.distill_t9_forward_student` requires both accepted Teacher gates, collects a
+   shuffled nominal/disturbed dataset covering every command anchor, and trains BC only.
+   It evaluates every speed with identical phase-zero Teacher/Student reset keys, command
+   counterfactual response, monotonic closed-loop speed, disturbed recovery, 30-second
+   straightness, and paired-seed `vx=0.08` retention against frozen T8.
+   It saves `student_policy_t9_forward_command_bc.npz` with stage
+   `T9_FORWARD_COMMAND_BC`. DAgger is not part of this first T9 attempt.
+
+Run the Teacher technical smoke first:
+
+```bash
+python -m scripts.train_t9_forward_teacher --smoke --out mjx_runs/teacher_t9_vx_grid_smoke_seed0 --mujoco-gl disable
+```
+
+Smoke only validates compilation and artifact flow; `grid_validation_pending=true` is
+expected. If smoke reaches `stage=t9_teacher_preliminary`, run the formal Teacher in a fresh
+directory:
+
+```bash
+python -m scripts.train_t9_forward_teacher --out mjx_runs/teacher_t9_vx_grid_seed0 --mujoco-gl disable
+```
+
+Then run the mandatory grid gate:
+
+```bash
+python -m scripts.evaluate_t9_teacher_grid --teacher-run mjx_runs/teacher_t9_vx_grid_seed0 --mujoco-gl disable --strict
+```
+
+Only if `stage=t9_teacher_grid_acceptance accepted=True`, run Student smoke and formal BC:
+
+```bash
+python -m scripts.distill_t9_forward_student --teacher-run mjx_runs/teacher_t9_vx_grid_seed0 --t8-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0 --smoke --save-dataset --out mjx_runs/student_t9_vx_grid_bc_smoke_seed0 --mujoco-gl disable
+python -m scripts.distill_t9_forward_student --teacher-run mjx_runs/teacher_t9_vx_grid_seed0 --t8-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0 --save-dataset --strict --out mjx_runs/student_t9_vx_grid_bc_seed0 --mujoco-gl disable
+```
+
+Local regression after this implementation is `145 passed`. The next external action is the
+Teacher smoke, not a formal long run and not stop/start transition training.
 
 After the short gate, train multiple straight-line speeds before adding yaw or lateral motion.
 Start with discrete anchors such as:

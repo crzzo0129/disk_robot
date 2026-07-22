@@ -26,6 +26,7 @@ class ForwardTeacherStudentConfig:
     observation_history: int = 4
 
     command_vx: float = 0.08
+    command_vx_values: tuple[float, ...] = ()
     student_action_scale: tuple[float, ...] = ACTION_SCALE
     residual_scale: tuple[float, ...] = RESIDUAL_SCALE
     residual_filter_alpha: float = 0.15
@@ -33,6 +34,7 @@ class ForwardTeacherStudentConfig:
     student_previous_action_input: bool = True
     student_phase_frequency: float = 1.2
     student_command_deadzone: float = 0.01
+    student_current_command_only: bool = False
     # Read-only diagnostics can pin all policy roles to the same controller phase.
     # None preserves the training behavior (random Teacher phase, zero Student phase).
     fixed_reset_phase: float | None = None
@@ -88,7 +90,12 @@ class ForwardTeacherStudentConfig:
 
     @property
     def student_policy_frame_size(self) -> int:
-        return self.student_frame_size if self.student_previous_action_input else self.student_frame_size - 12
+        size = self.student_frame_size
+        if not self.student_previous_action_input:
+            size -= 12
+        if self.student_current_command_only:
+            size -= 3
+        return size
 
     @property
     def student_policy_sensor_history_size(self) -> int:
@@ -100,8 +107,16 @@ class ForwardTeacherStudentConfig:
         return 3 if self.student_phase_conditioned else 0
 
     @property
+    def student_current_command_size(self) -> int:
+        return 3 if self.student_current_command_only else 0
+
+    @property
     def student_policy_observation_size(self) -> int:
-        return self.student_policy_sensor_history_size + self.student_internal_state_size
+        return (
+            self.student_policy_sensor_history_size
+            + self.student_current_command_size
+            + self.student_internal_state_size
+        )
 
     @property
     def privileged_size(self) -> int:

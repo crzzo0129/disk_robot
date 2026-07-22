@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from disk_robot.ik_reference import IKReferenceSpec, IKReferenceTable, build_ik_reference, interpolate_reference_jax
+from disk_robot.ik_reference import (
+    IKReferenceBank,
+    IKReferenceSpec,
+    IKReferenceTable,
+    build_ik_reference,
+    interpolate_reference_bank_jax,
+    interpolate_reference_jax,
+)
 from disk_robot.model_paths import ACTIVE_MODEL_XML
 from disk_robot.model_contract import resolve_model_contract
 from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
@@ -14,7 +21,7 @@ DEFAULT_XML = ACTIVE_MODEL_XML
 def make_forward_teacher_student_env(
     role: str,
     config: ForwardTeacherStudentConfig | None = None,
-    reference: IKReferenceTable | None = None,
+    reference: IKReferenceTable | IKReferenceBank | None = None,
     xml_path: str | Path = DEFAULT_XML,
     seed: int = 0,
 ):
@@ -76,13 +83,20 @@ def make_forward_teacher_student_env(
             self.student_action_scale = jp.asarray(cfg.student_action_scale)
             self.residual_scale = jp.asarray(cfg.residual_scale)
             self.frequency = float(cfg.student_phase_frequency)
+            self.reference_is_bank = isinstance(ref, IKReferenceBank)
             if ref is not None:
                 self.ik_table = jp.asarray(ref.joint_targets)
                 self.phase_offsets = jp.asarray((0.0, 0.5, 0.5, 0.0))
-                self.frequency = float(ref.spec.frequency)
-                self.duty = float(ref.spec.duty)
+                if self.reference_is_bank:
+                    self.ik_commands = jp.asarray(ref.command_vx)
+                    self.frequency = float(ref.specs[0].frequency)
+                    self.duty = float(ref.specs[0].duty)
+                else:
+                    self.frequency = float(ref.spec.frequency)
+                    self.duty = float(ref.spec.duty)
             self.dt = self.model.opt.timestep * max(1, cfg.action_repeat)
             self.command = jp.asarray((cfg.command_vx, 0.0, 0.0))
+            self.command_vx_values = jp.asarray(cfg.command_vx_values)
             self.torso_body_id = self.contract.torso_body_id
             self.torso_geom_id = self.contract.torso_geom_id
             self.floor_geom_id = self.contract.floor_geom_id
@@ -117,8 +131,18 @@ def make_forward_teacher_student_env(
                 push_magnitude_key,
                 motor_key,
                 delay_key,
+                command_key,
                 next_rng,
-            ) = jax.random.split(rng, 9)
+            ) = jax.random.split(rng, 10)
+            if self.command_vx_values.size:
+                command_index = jax.random.randint(
+                    command_key, (), 0, self.command_vx_values.shape[0]
+                )
+                command = jp.stack(
+                    (self.command_vx_values[command_index], jp.array(0.0), jp.array(0.0))
+                )
+            else:
+                command = self.command
             if self.config.fixed_reset_phase is not None:
                 phase = jp.array(float(self.config.fixed_reset_phase))
                 initial_target = self.stand_q
@@ -197,11 +221,11 @@ def make_forward_teacher_student_env(
             student_history = jp.zeros(self.config.student_observation_size)
             student_obs = self._update_student_history(
                 student_history,
-                self._student_frame(data, previous_student_action),
+                self._student_frame(data, previous_student_action, command),
             )
             gait_blend = jp.array(0.0)
             student_policy_obs = self._student_policy_obs(
-                student_obs, phase, gait_blend
+                student_obs, phase, gait_blend, command
             )
             info = {
                 "rng": next_rng,
@@ -212,6 +236,7 @@ def make_forward_teacher_student_env(
                 "student_policy_obs": student_policy_obs,
                 "phase": phase,
                 "gait_blend": gait_blend,
+                "command": command,
                 "last_foot_pos": data.site_xpos[self.foot_site_ids],
                 "target_ctrl": initial_target,
                 "previous_target_ctrl": initial_target,
@@ -256,12 +281,13 @@ def make_forward_teacher_student_env(
             action = jp.clip(action, -1.0, 1.0)
             phase = state.info["phase"]
             gait_blend = state.info["gait_blend"]
+            command = state.info["command"]
             if self.role == "student":
                 student_action = action
                 target_ctrl = self.stand_q + self.student_action_scale * student_action
                 residual_action = jp.zeros(self.config.action_size)
             else:
-                ik_target = self._blended_ik_target(phase, gait_blend)
+                ik_target = self._blended_ik_target(phase, gait_blend, command[0])
                 if self.role == "teacher":
                     residual_action = self._filter_teacher_residual(
                         state.info["previous_residual"], action
@@ -324,7 +350,7 @@ def make_forward_teacher_student_env(
             )
             foot_slip = jp.mean(jp.sum(jp.square(foot_velocity), axis=1) * actual_contacts)
             command_magnitude = (
-                jp.linalg.norm(self.command[:2]) + jp.abs(self.command[2])
+                jp.linalg.norm(command[:2]) + jp.abs(command[2])
             )
             command_active = command_magnitude > self.config.student_command_deadzone
             phase_increment = jp.where(command_active, self.frequency * self.dt, 0.0)
@@ -338,7 +364,9 @@ def make_forward_teacher_student_env(
                 residual_delta = jp.zeros(self.config.action_size)
                 contact_mismatch = jp.array(0.0)
             else:
-                next_ik_target = self._blended_ik_target(next_phase, next_gait_blend)
+                next_ik_target = self._blended_ik_target(
+                    next_phase, next_gait_blend, command[0]
+                )
                 desired_contacts = self._desired_contacts(next_phase)
                 residual_delta = residual_action - state.info["previous_residual"]
                 contact_mismatch = next_gait_blend * jp.mean(
@@ -358,13 +386,13 @@ def make_forward_teacher_student_env(
             ).astype(jp.float32)
 
             forward_velocity = world_velocity[0]
-            velocity_error = forward_velocity - self.config.command_vx
+            velocity_error = forward_velocity - command[0]
             smoothed_world_velocity = state.info["smoothed_world_velocity"] + (
                 self.config.recovery_velocity_ema_alpha
                 * (world_velocity[:2] - state.info["smoothed_world_velocity"])
             )
             smoothed_velocity_error = jp.abs(
-                smoothed_world_velocity[0] - self.config.command_vx
+                smoothed_world_velocity[0] - command[0]
             )
             recovery_condition = (
                 (smoothed_velocity_error <= self.config.recovery_forward_tolerance)
@@ -386,7 +414,9 @@ def make_forward_teacher_student_env(
                     -(velocity_error * velocity_error + world_velocity[1] ** 2)
                     / self.config.velocity_sigma
                 ),
-                "progress": self.config.reward_progress * jp.clip(forward_velocity, -0.3, 0.3),
+                "progress": self.config.reward_progress
+                * command_active.astype(jp.float32)
+                * jp.clip(forward_velocity, -0.3, 0.3),
                 "yaw": self.config.reward_yaw
                 * jp.exp(-(body_angular_velocity[2] ** 2) / self.config.yaw_sigma),
                 "alive": self.config.reward_alive,
@@ -408,10 +438,10 @@ def make_forward_teacher_student_env(
 
             student_history = self._update_student_history(
                 state.info["student_history"],
-                self._student_frame(data, student_action),
+                self._student_frame(data, student_action, command),
             )
             student_policy_obs = self._student_policy_obs(
-                student_history, next_phase, next_gait_blend
+                student_history, next_phase, next_gait_blend, command
             )
             info = {
                 **state.info,
@@ -454,6 +484,7 @@ def make_forward_teacher_student_env(
                 "reward": reward,
                 **{f"reward_{name}": value for name, value in reward_terms.items()},
                 "velocity_x": forward_velocity,
+                "command_vx": command[0],
                 "velocity_y": world_velocity[1],
                 "abs_velocity_y": jp.abs(world_velocity[1]),
                 "body_velocity_x": body_velocity[0],
@@ -489,7 +520,9 @@ def make_forward_teacher_student_env(
             )
             target = jp.clip(
                 self._blended_ik_target(
-                    state.info["phase"], state.info["gait_blend"]
+                    state.info["phase"],
+                    state.info["gait_blend"],
+                    state.info["command"][0],
                 )
                 + self.residual_scale * jp.clip(residual_action, -1.0, 1.0),
                 self.ctrl_low,
@@ -503,11 +536,19 @@ def make_forward_teacher_student_env(
                 command - previous_residual
             )
 
-        def _ik_target(self, phase):
+        def _ik_target(self, phase, command_vx):
+            if self.reference_is_bank:
+                return interpolate_reference_bank_jax(
+                    jp, self.ik_commands, self.ik_table, command_vx, phase
+                )
             return interpolate_reference_jax(jp, self.ik_table, phase)
 
-        def _blended_ik_target(self, phase, blend):
-            return self.stand_q + blend * (self._ik_target(phase) - self.stand_q)
+        def _blended_ik_target(self, phase, blend, command_vx=None):
+            if command_vx is None:
+                command_vx = self.config.command_vx
+            return self.stand_q + blend * (
+                self._ik_target(phase, command_vx) - self.stand_q
+            )
 
         def _target_to_student_action(self, target):
             return jp.clip((target - self.stand_q) / self.student_action_scale, -1.0, 1.0)
@@ -516,7 +557,7 @@ def make_forward_teacher_student_env(
             phases = jp.mod(phase + self.phase_offsets, 1.0)
             return (phases < self.duty).astype(jp.float32)
 
-        def _student_frame(self, data, previous_student_action):
+        def _student_frame(self, data, previous_student_action, command):
             torso_mat = data.xmat[self.torso_body_id]
             body_angular_velocity = torso_mat.T @ data.cvel[self.torso_body_id, :3]
             body_linear_velocity = torso_mat.T @ data.cvel[self.torso_body_id, 3:6]
@@ -529,7 +570,7 @@ def make_forward_teacher_student_env(
                     data.qpos[self.qpos_indices] - self.stand_q,
                     data.qvel[self.dof_indices],
                     previous_student_action,
-                    self.command,
+                    command,
                 )
             )
 
@@ -537,13 +578,22 @@ def make_forward_teacher_student_env(
             size = self.config.student_frame_size
             return jp.roll(history, size).at[:size].set(frame)
 
-        def _student_policy_obs(self, student_history, phase, gait_blend):
+        def _student_policy_obs(self, student_history, phase, gait_blend, command=None):
+            if command is None:
+                command = self.command
             if not self.config.student_previous_action_input:
                 frames = student_history.reshape(
                     self.config.observation_history, self.config.student_frame_size
                 )
                 frames = jp.concatenate((frames[:, :33], frames[:, 45:]), axis=1)
                 student_history = frames.reshape(-1)
+            if self.config.student_current_command_only:
+                frame_size = 36 if not self.config.student_previous_action_input else 48
+                frames = student_history.reshape(
+                    self.config.observation_history, frame_size
+                )
+                student_history = frames[:, :-3].reshape(-1)
+                student_history = jp.concatenate((student_history, command))
             if not self.config.student_phase_conditioned:
                 return student_history
             phase_angle = 2.0 * jp.pi * phase
@@ -617,6 +667,7 @@ def make_forward_teacher_student_env(
             names = (
                 "reward",
                 "velocity_x",
+                "command_vx",
                 "velocity_y",
                 "abs_velocity_y",
                 "body_velocity_x",

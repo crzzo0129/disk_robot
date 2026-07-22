@@ -112,3 +112,15 @@ To reprint the window summary from an existing report without JAX or another rol
 ```bash
 python -m scripts.diagnose_phase_student_feedback --report-in mjx_runs/student_t8_phase_bc_no_previous_action_seed0/feedback_long_horizon_diagnosis.json
 ```
+
+## T9 Forward-Speed Grid
+
+T9 begins with episode-fixed forward commands at `0.00/0.04/0.06/0.08/0.10 m/s`. Run the
+new Teacher smoke before any formal training:
+
+```bash
+python -m scripts.train_t9_forward_teacher --smoke --out mjx_runs/teacher_t9_vx_grid_smoke_seed0 --mujoco-gl disable
+```
+
+The preliminary Teacher is deliberately not accepted until the independent per-speed grid
+gate passes. Full commands and artifact semantics are recorded in `handoff.md` section 19.2.

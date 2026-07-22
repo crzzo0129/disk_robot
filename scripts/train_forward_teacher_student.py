@@ -11,6 +11,12 @@ import numpy as np
 
 from disk_robot.gait_speed import plan_forward_gait
 from disk_robot.ik_reference import IKReferenceSpec, build_ik_reference
+from disk_robot.t9_command import (
+    build_t9_reference_bank,
+    forward_reference_specs,
+    make_t9_config,
+    validate_forward_speed_anchors,
+)
 from disk_robot.teacher_student_config import ForwardTeacherStudentConfig
 from disk_robot_mjx.pipeline import configure_cloud_runtime, make_network_factory
 from disk_robot_mjx.teacher_student_env import DEFAULT_XML, make_forward_teacher_student_env
@@ -124,6 +130,13 @@ def parse_args(argv=None):
     parser.add_argument("--ik-height", type=float, default=0.025)
     parser.add_argument("--ik-duty", type=float, default=0.72)
     parser.add_argument("--command-vx", type=float, default=0.08)
+    parser.add_argument(
+        "--command-vx-grid",
+        type=float,
+        nargs="+",
+        default=None,
+        help="T9 episode-fixed forward-speed anchors. Requires --teacher-only.",
+    )
     parser.add_argument("--kp", type=float, default=10.0)
     parser.add_argument("--kd", type=float, default=0.4)
     parser.add_argument("--torque-limit", type=float, default=3.0)
@@ -497,6 +510,7 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         return (next_state, policy_key), (
             next_state.reward,
             next_state.metrics["velocity_x"],
+            next_state.metrics["command_vx"],
             next_state.metrics["velocity_y"],
             next_state.metrics["abs_velocity_y"],
             next_state.metrics["abs_yaw_rate"],
@@ -520,6 +534,7 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
     (
         reward,
         vx,
+        command_vx,
         vy,
         abs_vy,
         abs_yaw_rate,
@@ -550,14 +565,16 @@ def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
         float(np.mean(recovery_steps[has_push])) * env.dt if np.any(has_push) else 0.0
     )
     mean_velocity_x = float(np.sum(vx * alive) / denominator)
+    mean_command_vx = float(np.sum(command_vx * alive) / denominator)
     return {
         "reward_per_step": float(np.sum(reward * alive) / denominator),
         "mean_velocity_x": mean_velocity_x,
+        "mean_command_vx": mean_command_vx,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
         "mean_lateral_distance": float(np.mean(np.sum(vy * alive, axis=0)) * env.dt),
         "mean_abs_velocity_y": float(np.sum(abs_vy * alive) / denominator),
         "mean_abs_yaw_rate": float(np.sum(abs_yaw_rate * alive) / denominator),
-        "mean_velocity_error": abs(mean_velocity_x - env.config.command_vx),
+        "mean_velocity_error": abs(mean_velocity_x - mean_command_vx),
         "mean_instantaneous_velocity_error": float(
             np.sum(velocity_error * alive) / denominator
         ),
@@ -597,6 +614,7 @@ def _evaluate_oracle_student(jax, env, teacher_policy, seed, env_count, horizon)
         return (next_state, policy_key), (
             next_state.reward,
             next_state.metrics["velocity_x"],
+            next_state.metrics["command_vx"],
             next_state.metrics["velocity_y"],
             next_state.metrics["abs_velocity_y"],
             next_state.metrics["abs_yaw_rate"],
@@ -620,6 +638,7 @@ def _evaluate_oracle_student(jax, env, teacher_policy, seed, env_count, horizon)
     (
         reward,
         vx,
+        command_vx,
         vy,
         abs_vy,
         abs_yaw_rate,
@@ -650,14 +669,16 @@ def _evaluate_oracle_student(jax, env, teacher_policy, seed, env_count, horizon)
         float(np.mean(recovery_steps[has_push])) * env.dt if np.any(has_push) else 0.0
     )
     mean_velocity_x = float(np.sum(vx * alive) / denominator)
+    mean_command_vx = float(np.sum(command_vx * alive) / denominator)
     return {
         "reward_per_step": float(np.sum(reward * alive) / denominator),
         "mean_velocity_x": mean_velocity_x,
+        "mean_command_vx": mean_command_vx,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
         "mean_lateral_distance": float(np.mean(np.sum(vy * alive, axis=0)) * env.dt),
         "mean_abs_velocity_y": float(np.sum(abs_vy * alive) / denominator),
         "mean_abs_yaw_rate": float(np.sum(abs_yaw_rate * alive) / denominator),
-        "mean_velocity_error": abs(mean_velocity_x - env.config.command_vx),
+        "mean_velocity_error": abs(mean_velocity_x - mean_command_vx),
         "mean_instantaneous_velocity_error": float(
             np.sum(velocity_error * alive) / denominator
         ),
@@ -816,6 +837,7 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
         return next_state, (
             next_state.reward,
             next_state.metrics["velocity_x"],
+            next_state.metrics["command_vx"],
             next_state.metrics["velocity_y"],
             next_state.metrics["abs_velocity_y"],
             next_state.metrics["abs_yaw_rate"],
@@ -834,6 +856,7 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
     (
         reward,
         vx,
+        command_vx,
         vy,
         abs_vy,
         abs_yaw_rate,
@@ -865,14 +888,16 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
     )
     failed_any = np.max(failed, axis=0)
     mean_velocity_x = float(np.sum(vx * alive) / denominator)
+    mean_command_vx = float(np.sum(command_vx * alive) / denominator)
     return {
         "reward_per_step": float(np.sum(reward * alive) / denominator),
         "mean_velocity_x": mean_velocity_x,
+        "mean_command_vx": mean_command_vx,
         "mean_forward_distance": float(np.mean(np.sum(vx * alive, axis=0)) * env.dt),
         "mean_lateral_distance": float(np.mean(np.sum(vy * alive, axis=0)) * env.dt),
         "mean_abs_velocity_y": float(np.sum(abs_vy * alive) / denominator),
         "mean_abs_yaw_rate": float(np.sum(abs_yaw_rate * alive) / denominator),
-        "mean_velocity_error": abs(mean_velocity_x - env.config.command_vx),
+        "mean_velocity_error": abs(mean_velocity_x - mean_command_vx),
         "mean_instantaneous_velocity_error": float(
             np.sum(velocity_error * alive) / denominator
         ),
@@ -896,6 +921,13 @@ def _evaluate_student(jax, jp, env, params, obs_mean, obs_std, seed, env_count, 
 
 def main(argv=None):
     args = parse_args(argv)
+    command_grid = (
+        validate_forward_speed_anchors(args.command_vx_grid)
+        if args.command_vx_grid is not None
+        else None
+    )
+    if command_grid is not None and not args.teacher_only:
+        raise SystemExit("--command-vx-grid currently requires --teacher-only; use T9 distillation")
     _resolve_acceptance_thresholds(args)
     if not 0.0 < args.residual_scale_multiplier <= 1.0:
         raise SystemExit("--residual-scale-multiplier must be in (0, 1]")
@@ -1006,26 +1038,67 @@ def main(argv=None):
             for value in ForwardTeacherStudentConfig().residual_scale
         ),
     )
-    reference_spec, reference_source = _resolve_reference_spec(args)
-    print(
-        "stage=ik_reference status=building source=xml_stand "
-        f"speed_mode={reference_source['mode']} command_vx={args.command_vx:g} "
-        f"frequency={reference_spec.frequency:g} stride={reference_spec.stride_length:g} "
-        f"height={reference_spec.step_height:g} duty={reference_spec.duty:g}",
-        flush=True,
-    )
-    reference = build_ik_reference(args.xml_path, reference_spec)
-    np.savez(
-        args.out / "ik_reference.npz",
-        joint_targets=reference.joint_targets,
-        desired_contacts=reference.desired_contacts,
-        stand_q=reference.stand_q,
-    )
+    if command_grid is not None:
+        config = make_t9_config(config, command_grid)
+        reference = build_t9_reference_bank(
+            args.xml_path,
+            command_grid,
+            samples=args.ik_samples,
+            step_height=args.ik_height,
+            duty=args.ik_duty,
+        )
+        reference_specs = forward_reference_specs(
+            command_grid,
+            samples=args.ik_samples,
+            step_height=args.ik_height,
+            duty=args.ik_duty,
+        )
+        reference_spec = reference_specs[command_grid.index(config.command_vx)]
+        reference_source = {
+            "mode": "t9_command_grid",
+            "commands": list(command_grid),
+            "calibration": "candidate_structure_v1",
+        }
+        print(
+            "stage=t9_ik_reference_bank status=built source=xml_stand "
+            f"commands={','.join(f'{value:g}' for value in command_grid)} "
+            f"frequency={reference_spec.frequency:g} samples={args.ik_samples}",
+            flush=True,
+        )
+        np.savez(
+            args.out / "ik_reference_bank.npz",
+            command_vx=reference.command_vx,
+            joint_targets=reference.joint_targets,
+            desired_contacts=reference.desired_contacts,
+            stand_q=reference.stand_q,
+        )
+    else:
+        reference_spec, reference_source = _resolve_reference_spec(args)
+        reference_specs = None
+        print(
+            "stage=ik_reference status=building source=xml_stand "
+            f"speed_mode={reference_source['mode']} command_vx={args.command_vx:g} "
+            f"frequency={reference_spec.frequency:g} stride={reference_spec.stride_length:g} "
+            f"height={reference_spec.step_height:g} duty={reference_spec.duty:g}",
+            flush=True,
+        )
+        reference = build_ik_reference(args.xml_path, reference_spec)
+        np.savez(
+            args.out / "ik_reference.npz",
+            joint_targets=reference.joint_targets,
+            desired_contacts=reference.desired_contacts,
+            stand_q=reference.stand_q,
+        )
     run_config = {
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(args).items()
     }
     run_config["resolved_ik_reference"] = asdict(reference_spec)
+    if reference_specs is not None:
+        run_config["resolved_ik_reference_bank"] = [
+            asdict(spec) for spec in reference_specs
+        ]
+        run_config["stage"] = "T9_FORWARD_COMMAND_TEACHER"
     run_config["ik_reference_source"] = reference_source
     run_config["teacher_step_plan"] = training_plan
     (args.out / "run_config.json").write_text(
@@ -1125,8 +1198,11 @@ def main(argv=None):
 
     def progress_fn(step, metrics):
         step = int(step)
-        _teacher_progress(step, metrics, config.command_vx)
-        summary = _teacher_eval_summary(metrics, config.command_vx)
+        progress_command = (
+            float(np.mean(command_grid)) if command_grid is not None else config.command_vx
+        )
+        _teacher_progress(step, metrics, progress_command)
+        summary = _teacher_eval_summary(metrics, progress_command)
         best_teacher["summaries_by_step"][step] = summary
         params = best_teacher["pending_params"].pop(step, None)
         if params is not None:

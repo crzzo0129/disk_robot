@@ -216,6 +216,17 @@ python -m scripts.audit_phase_student_failure --teacher-run mjx_runs/teacher_t2a
 
 ## 7. 下一阶段：command-conditioned 手柄控制
 
+T8 的 30 秒长时复查表明，其闭环 action error 始终约为 `0.002`，没有再次出现 T5
+的递归放大；但相对 Teacher 的额外横漂在 `9.8 s` 后超过 `0.02 m`，到 30 秒达到
+`0.1952 m`。因此冻结 T8，不再为单一 `vx=0.08` 做 BC/DAgger 调参。后续速度网格除原有
+500-step 指标外，必须增加至少 1,500 control steps 的直线性、yaw 和 T8 retention 门。
+
+T9 的 episode-fixed 第一阶段已经实现。速度锚点为 `0/0.04/0.06/0.08/0.10 m/s`，新
+Teacher 使用 command-conditioned IK bank 重新训练；T9 Student 输入为四帧 33 维纯物理
+历史、一个当前 command 和 phase/blend，共 138 维。Teacher aggregate 训练结果不能直接
+验收，必须先通过逐速度 nominal/disturbed 与 1,500-step grid gate。第一阶段不包含
+within-episode stop/start，也不使用 DAgger。
+
 下一阶段不是直接连接手柄，而是训练 command-conditioned Teacher/Student：
 
 1. 先扩展一维 `vx` 范围和停止/启动；
