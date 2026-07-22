@@ -496,9 +496,19 @@ def _collect_teacher_dataset(
     return np.concatenate(observations), np.concatenate(labels)
 
 
-def _evaluate_teacher(jax, env, teacher_policy, seed, env_count, horizon):
-    reset_batch = jax.jit(jax.vmap(env.reset))
-    step_batch = jax.jit(jax.vmap(env.step))
+def _evaluate_teacher(
+    jax,
+    env,
+    teacher_policy,
+    seed,
+    env_count,
+    horizon,
+    *,
+    reset_batch=None,
+    step_batch=None,
+):
+    reset_batch = reset_batch or jax.jit(jax.vmap(env.reset))
+    step_batch = step_batch or jax.jit(jax.vmap(env.step))
     state = reset_batch(jax.random.split(jax.random.PRNGKey(seed), env_count))
 
     def eval_step(carry, _):

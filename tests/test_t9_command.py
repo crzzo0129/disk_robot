@@ -81,6 +81,50 @@ def test_t9_speed_gate_requires_nominal_disturbed_and_long_horizon():
     assert not failing["long_horizon_safe"]
 
 
+def test_t9_grid_diagnostic_selects_only_stored_speeds():
+    from scripts.evaluate_t9_teacher_grid import _selected_speeds, parse_args
+
+    args = parse_args(
+        [
+            "--teacher-run",
+            "teacher",
+            "--speeds",
+            "0",
+            "0.08",
+            "--disturbed-only",
+            "--fail-fast",
+        ]
+    )
+
+    assert args.speeds == [0.0, 0.08]
+    assert args.disturbed_only
+    assert args.fail_fast
+    assert _selected_speeds((0.0, 0.04, 0.08), args.speeds) == (0.0, 0.08)
+    with pytest.raises(SystemExit, match="not a stored anchor"):
+        _selected_speeds((0.0, 0.04, 0.08), (0.06,))
+
+
+def test_t9_disturbed_gate_reports_each_failed_criterion():
+    from scripts.evaluate_t9_teacher_grid import _disturbed_gate_checks
+
+    baseline = {
+        "failure_rate": 0.0,
+        "mean_post_push_velocity_error": 0.02,
+        "mean_recovery_time": 0.4,
+        "mean_forward_distance": 0.8,
+        "reward_per_step": 1.5,
+        "mean_disk_contacts": 0.0,
+    }
+    ppo = dict(baseline)
+    ppo["mean_recovery_time"] = 0.51
+
+    checks = _disturbed_gate_checks(ppo, baseline)
+
+    assert checks["failure_rate"]
+    assert checks["post_push_velocity_error"]
+    assert not checks["recovery_time"]
+
+
 def test_t9_grid_gate_can_evaluate_unpromoted_best_ppo(tmp_path):
     from scripts.evaluate_t9_teacher_grid import _candidate_params_path
 

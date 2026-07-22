@@ -347,9 +347,22 @@ def analyze_saved_rollout(path, out=None, windows=(5.0, 10.0, 20.0, 30.0)):
     return report_path
 
 
-def _rollout_policy(jax, jp, env, kind, teacher_policy, student_policy, seed, envs, steps):
-    reset_batch = jax.jit(jax.vmap(env.reset))
-    step_batch = jax.jit(jax.vmap(env.step))
+def _rollout_policy(
+    jax,
+    jp,
+    env,
+    kind,
+    teacher_policy,
+    student_policy,
+    seed,
+    envs,
+    steps,
+    *,
+    reset_batch=None,
+    step_batch=None,
+):
+    reset_batch = reset_batch or jax.jit(jax.vmap(env.reset))
+    step_batch = step_batch or jax.jit(jax.vmap(env.step))
     actuator_ids = env.actuator_ids
     torso_body_id = env.torso_body_id
     state = reset_batch(jax.random.split(jax.random.PRNGKey(seed), envs))

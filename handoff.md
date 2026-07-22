@@ -919,6 +919,17 @@ unpack a serialized locomotion config wholesale can fail on WalkConfig-only fiel
 `command_vx_min` before grid evaluation starts. This is an artifact-loading compatibility
 issue and does not require retraining the saved PPO candidate.
 
+For fast failure diagnosis, do not rerun the full six-rollout speed gate. For example, if
+the zero-speed gate reports only `disturbed=False`, run just the paired PPO/IK disturbed
+check with a smaller batch:
+
+```bash
+python -m scripts.evaluate_t9_teacher_grid --teacher-run mjx_runs/teacher_t9_vx_grid_seed0 --speeds 0 --disturbed-only --eval-envs 16 --steps 500 --mujoco-gl disable
+```
+
+This writes `teacher/grid_disturbed_diagnosis.json`, prints the failure, post-push error,
+recovery-time, and disturbed-score checks, and never changes the formal Teacher acceptance.
+
 Only if `stage=t9_teacher_grid_acceptance accepted=True`, run Student smoke and formal BC:
 
 ```bash
