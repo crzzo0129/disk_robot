@@ -11,6 +11,8 @@ def test_t9_teacher_entry_has_explicit_grid_and_never_distills_inline():
 
     assert args.speed_anchors == [0.0, 0.04, 0.06, 0.08, 0.10]
     assert args.teacher_steps == 1_500_000
+    assert args.penalty_lateral_velocity == 0.5
+    assert args.penalty_yaw_rate == 1.0
     assert args.mujoco_gl == "disable"
     assert args.smoke
     assert passthrough == []
@@ -18,6 +20,8 @@ def test_t9_teacher_entry_has_explicit_grid_and_never_distills_inline():
     assert '"--teacher-only"' in source
     assert '"--teacher-disturbances"' in source
     assert '"--command-vx-grid"' in source
+    assert '"--penalty-lateral-velocity"' in source
+    assert '"--penalty-yaw-rate"' in source
 
 
 def test_generic_pipeline_rejects_grid_distillation_before_loading_jax():
@@ -311,6 +315,8 @@ def test_t9_environment_owns_episode_command_and_reference_bank():
     assert "interpolate_reference_bank_jax" in source
     assert "command_active.astype" in source
     assert "student_current_command_only" in source
+    assert '"lateral_velocity": -self.config.penalty_lateral_velocity' in source
+    assert '"yaw_rate": -self.config.penalty_yaw_rate' in source
 
 
 def test_t9_student_retention_uses_paired_phase_zero_seeds():

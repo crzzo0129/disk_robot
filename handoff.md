@@ -946,6 +946,24 @@ If yaw/lateral drift drops materially, fine-tune a new Teacher run with the smal
 scale and then recheck disturbed recovery. If it does not, change the straightness reward or
 observation rather than merely adding PPO steps.
 
+Observed on the first T9 candidate at `vx=0.06`: the original PPO had 30-second mean absolute
+lateral/yaw drift `0.256/0.318`, versus IK `0.020/0.017`. Evaluating the same policy at half
+residual authority worsened it to `0.452/0.473`, so deployment-time residual rescaling is
+rejected. The next candidate keeps the original residual authority and adds explicit
+instantaneous straightness costs `0.5 * |vy| + 1.0 * |yaw_rate|`. These defaults are scoped
+to `scripts.train_t9_forward_teacher`; T2a/T8 generic defaults remain zero.
+
+Validate checkpoint restore and the new reward tree with a smoke before a short warm-start:
+
+```bash
+python -m scripts.train_t9_forward_teacher --smoke --teacher-restore mjx_runs/teacher_t9_vx_grid_seed0/teacher/ppo_checkpoint --out mjx_runs/teacher_t9_vx_grid_straight_smoke_seed0 --mujoco-gl disable
+python -m scripts.train_t9_forward_teacher --teacher-restore mjx_runs/teacher_t9_vx_grid_seed0/teacher/ppo_checkpoint --teacher-steps 500000 --out mjx_runs/teacher_t9_vx_grid_straight_seed0 --mujoco-gl disable
+```
+
+After training, run the `vx=0.06 --long-only` diagnosis first on the new run. Do not spend
+time on the full grid or BC unless straightness improves while disturbed recovery remains
+acceptable.
+
 Only if `stage=t9_teacher_grid_acceptance accepted=True`, run Student smoke and formal BC:
 
 ```bash
@@ -953,8 +971,8 @@ python -m scripts.distill_t9_forward_student --teacher-run mjx_runs/teacher_t9_v
 python -m scripts.distill_t9_forward_student --teacher-run mjx_runs/teacher_t9_vx_grid_seed0 --t8-run mjx_runs/student_t8_phase_bc_no_previous_action_seed0 --save-dataset --strict --out mjx_runs/student_t9_vx_grid_bc_seed0 --mujoco-gl disable
 ```
 
-Local regression after this implementation is `145 passed`. The next external action is the
-Teacher smoke, not a formal long run and not stop/start transition training.
+Local regression after the straightness-reward implementation is `152 passed`. The next
+external action is the warm-start Teacher smoke, not BC or stop/start transition training.
 
 After the short gate, train multiple straight-line speeds before adding yaw or lateral motion.
 Start with discrete anchors such as:

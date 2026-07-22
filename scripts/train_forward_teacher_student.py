@@ -51,6 +51,8 @@ def parse_args(argv=None):
     parser.add_argument("--residual-filter-alpha", type=float, default=0.15)
     parser.add_argument("--penalty-residual", type=float, default=0.20)
     parser.add_argument("--penalty-residual-rate", type=float, default=0.05)
+    parser.add_argument("--penalty-lateral-velocity", type=float, default=0.0)
+    parser.add_argument("--penalty-yaw-rate", type=float, default=0.0)
     parser.add_argument(
         "--residual-scale-multiplier",
         type=float,
@@ -943,8 +945,13 @@ def main(argv=None):
         raise SystemExit("--residual-scale-multiplier must be in (0, 1]")
     if not 0.0 < args.residual_filter_alpha <= 1.0:
         raise SystemExit("--residual-filter-alpha must be in (0, 1]")
-    if args.penalty_residual < 0.0 or args.penalty_residual_rate < 0.0:
-        raise SystemExit("residual penalties must be non-negative")
+    if min(
+        args.penalty_residual,
+        args.penalty_residual_rate,
+        args.penalty_lateral_velocity,
+        args.penalty_yaw_rate,
+    ) < 0.0:
+        raise SystemExit("reward penalties must be non-negative")
     if args.teacher_selection_mode == "preserve" and not args.teacher_only:
         raise SystemExit("--teacher-selection-mode preserve requires --teacher-only")
     if args.teacher_selection_mode == "robust" and not args.teacher_disturbances:
@@ -1028,6 +1035,8 @@ def main(argv=None):
         residual_filter_alpha=args.residual_filter_alpha,
         penalty_residual=args.penalty_residual,
         penalty_residual_rate=args.penalty_residual_rate,
+        penalty_lateral_velocity=args.penalty_lateral_velocity,
+        penalty_yaw_rate=args.penalty_yaw_rate,
         disturbance_enabled=args.teacher_disturbances,
         push_step_min=args.push_step_min,
         push_step_max=args.push_step_max,

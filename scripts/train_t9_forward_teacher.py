@@ -24,6 +24,8 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-envs", type=int, default=2048)
     parser.add_argument("--teacher-eval-envs", type=int, default=256)
     parser.add_argument("--teacher-restore", type=Path, default=None)
+    parser.add_argument("--penalty-lateral-velocity", type=float, default=0.5)
+    parser.add_argument("--penalty-yaw-rate", type=float, default=1.0)
     parser.add_argument("--xml-path", type=Path, default=None)
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--smoke", action="store_true")
@@ -66,6 +68,10 @@ def main(argv=None):
         str(args.teacher_eval_envs),
         "--teacher-minibatches",
         "8",
+        "--penalty-lateral-velocity",
+        str(args.penalty_lateral_velocity),
+        "--penalty-yaw-rate",
+        str(args.penalty_yaw_rate),
         "--teacher-selection-mode",
         "robust",
         "--teacher-disturbances",

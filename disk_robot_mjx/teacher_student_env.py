@@ -421,6 +421,10 @@ def make_forward_teacher_student_env(
                 * jp.exp(-(body_angular_velocity[2] ** 2) / self.config.yaw_sigma),
                 "alive": self.config.reward_alive,
                 "vertical_velocity": -self.config.penalty_vertical_velocity * world_velocity[2] ** 2,
+                "lateral_velocity": -self.config.penalty_lateral_velocity
+                * jp.abs(world_velocity[1]),
+                "yaw_rate": -self.config.penalty_yaw_rate
+                * jp.abs(body_angular_velocity[2]),
                 "roll_pitch_rate": -self.config.penalty_roll_pitch_rate
                 * jp.sum(jp.square(body_angular_velocity[:2])),
                 "orientation": -self.config.penalty_orientation * (1.0 - upright * upright),
@@ -696,6 +700,8 @@ def make_forward_teacher_student_env(
                 "yaw",
                 "alive",
                 "vertical_velocity",
+                "lateral_velocity",
+                "yaw_rate",
                 "roll_pitch_rate",
                 "orientation",
                 "joint_velocity",

@@ -66,6 +66,8 @@ class ForwardTeacherStudentConfig:
     yaw_sigma: float = 0.10
     reward_alive: float = 0.2
     penalty_vertical_velocity: float = 0.2
+    penalty_lateral_velocity: float = 0.0
+    penalty_yaw_rate: float = 0.0
     penalty_roll_pitch_rate: float = 0.20
     penalty_orientation: float = 0.8
     penalty_joint_velocity: float = 0.0005
