@@ -929,6 +929,10 @@ python -m scripts.evaluate_t9_teacher_grid --teacher-run mjx_runs/teacher_t9_vx_
 
 This writes `teacher/grid_disturbed_diagnosis.json`, prints the failure, post-push error,
 recovery-time, and disturbed-score checks, and never changes the formal Teacher acceptance.
+At `vx=0`, the generic disturbed score is diagnostic only because it contains forward
+distance and favors exact zero-residual IK. Stop acceptance instead requires the direct
+failure, post-push longitudinal/lateral velocity, recovery, yaw, and disk-contact checks.
+Moving-speed gates continue to require the generic disturbed score.
 
 Only if `stage=t9_teacher_grid_acceptance accepted=True`, run Student smoke and formal BC:
 

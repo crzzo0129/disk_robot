@@ -118,11 +118,39 @@ def test_t9_disturbed_gate_reports_each_failed_criterion():
     ppo = dict(baseline)
     ppo["mean_recovery_time"] = 0.51
 
-    checks = _disturbed_gate_checks(ppo, baseline)
+    checks = _disturbed_gate_checks(0.08, ppo, baseline)
 
     assert checks["failure_rate"]
     assert checks["post_push_velocity_error"]
     assert not checks["recovery_time"]
+
+
+def test_t9_stop_disturbance_uses_physical_checks_not_generic_score():
+    from scripts.evaluate_t9_teacher_grid import _disturbed_gate_checks
+
+    baseline = {
+        "failure_rate": 0.0,
+        "mean_post_push_velocity_error": 0.0084,
+        "mean_post_push_abs_velocity_y": 0.02,
+        "mean_recovery_time": 0.225,
+        "mean_abs_yaw_rate": 0.02,
+        "mean_disk_contacts": 0.0,
+        "mean_forward_distance": 0.05,
+        "reward_per_step": 2.5,
+    }
+    ppo = dict(baseline)
+    ppo.update(
+        mean_post_push_velocity_error=0.0058,
+        mean_recovery_time=0.205,
+        mean_forward_distance=0.0,
+        reward_per_step=2.3,
+    )
+
+    checks = _disturbed_gate_checks(0.0, ppo, baseline)
+
+    assert all(checks.values())
+    assert "disturbed_score" not in checks
+    assert "post_push_lateral_speed" in checks
 
 
 def test_t9_grid_gate_can_evaluate_unpromoted_best_ppo(tmp_path):
