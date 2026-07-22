@@ -934,6 +934,18 @@ distance and favors exact zero-residual IK. Stop acceptance instead requires the
 failure, post-push longitudinal/lateral velocity, recovery, yaw, and disk-contact checks.
 Moving-speed gates continue to require the generic disturbed score.
 
+If a moving-speed gate passes nominal/disturbed checks but fails only long-horizon
+straightness while IK remains straight, diagnose residual-induced drift before retraining.
+For example, test the saved policy at half residual authority without changing acceptance:
+
+```bash
+python -m scripts.evaluate_t9_teacher_grid --teacher-run mjx_runs/teacher_t9_vx_grid_seed0 --speeds 0.06 --long-only --long-envs 16 --long-steps 1500 --residual-scale-multiplier 0.5 --mujoco-gl disable
+```
+
+If yaw/lateral drift drops materially, fine-tune a new Teacher run with the smaller residual
+scale and then recheck disturbed recovery. If it does not, change the straightness reward or
+observation rather than merely adding PPO steps.
+
 Only if `stage=t9_teacher_grid_acceptance accepted=True`, run Student smoke and formal BC:
 
 ```bash

@@ -49,6 +49,17 @@ def parse_args(argv=None):
         action="store_true",
         help="Diagnostic mode: run only PPO/IK disturbed checks; requires --speeds.",
     )
+    parser.add_argument(
+        "--long-only",
+        action="store_true",
+        help="Diagnostic mode: run only PPO/IK long-horizon checks; requires --speeds.",
+    )
+    parser.add_argument(
+        "--residual-scale-multiplier",
+        type=float,
+        default=None,
+        help="Diagnostic override relative to the base residual limits.",
+    )
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--strict", action="store_true")
     return parser.parse_args(argv)
@@ -197,15 +208,8 @@ def _speed_gate(
     disturbed_checks = _disturbed_gate_checks(
         speed, ppo_disturbed, baseline_disturbed
     )
-    long_checks = {
-        "failure_rate": long_ppo["failure_rate"] == 0.0,
-        "disk_contact": long_ppo["disk_contact_environment_rate"] == 0.0,
-        "force_saturation": long_ppo["force_saturation_fraction"] < 0.01,
-        "lateral_displacement": long_ppo["mean_absolute_lateral_displacement_m"]
-        <= long_baseline["mean_absolute_lateral_displacement_m"] + 0.25,
-        "yaw_change": long_ppo["mean_absolute_yaw_change_rad"]
-        <= long_baseline["mean_absolute_yaw_change_rad"] + 0.20,
-    }
+    long_checks = _long_gate_checks(long_ppo, long_baseline)
+
     nominal_preserved = all(nominal_checks.values())
     disturbed_improved = all(disturbed_checks.values())
     long_safe = all(long_checks.values())
@@ -222,12 +226,31 @@ def _speed_gate(
     }
 
 
+def _long_gate_checks(long_ppo, long_baseline):
+    return {
+        "failure_rate": long_ppo["failure_rate"] == 0.0,
+        "disk_contact": long_ppo["disk_contact_environment_rate"] == 0.0,
+        "force_saturation": long_ppo["force_saturation_fraction"] < 0.01,
+        "lateral_displacement": long_ppo["mean_absolute_lateral_displacement_m"]
+        <= long_baseline["mean_absolute_lateral_displacement_m"] + 0.25,
+        "yaw_change": long_ppo["mean_absolute_yaw_change_rad"]
+        <= long_baseline["mean_absolute_yaw_change_rad"] + 0.20,
+    }
+
+
 def main(argv=None):
     args = parse_args(argv)
     if min(args.eval_envs, args.long_envs, args.steps, args.long_steps) < 1:
         raise SystemExit("evaluation counts must be positive")
-    if args.disturbed_only and args.speeds is None:
-        raise SystemExit("--disturbed-only requires an explicit --speeds selection")
+    if args.disturbed_only and args.long_only:
+        raise SystemExit("choose only one of --disturbed-only and --long-only")
+    if (args.disturbed_only or args.long_only) and args.speeds is None:
+        raise SystemExit("diagnostic-only modes require an explicit --speeds selection")
+    if args.residual_scale_multiplier is not None:
+        if not (args.disturbed_only or args.long_only):
+            raise SystemExit("residual-scale override is diagnostic-only")
+        if args.residual_scale_multiplier <= 0.0:
+            raise SystemExit("--residual-scale-multiplier must be positive")
     teacher_run = args.teacher_run.expanduser().resolve()
     run_config = _read_json(teacher_run / "run_config.json")
     evaluation_path = teacher_run / "teacher" / "evaluation.json"
@@ -263,6 +286,18 @@ def main(argv=None):
         raise SystemExit("T9 run_config reference bank does not match its command grid")
     xml_path = _resolve_xml_path(run_config, args.xml_path)
     base_config = make_t9_config(_config_from_teacher_run(run_config), anchors)
+    if args.residual_scale_multiplier is not None:
+        stored_multiplier = float(run_config.get("residual_scale_multiplier", 1.0))
+        ratio = args.residual_scale_multiplier / stored_multiplier
+        base_config = replace(
+            base_config,
+            residual_scale=tuple(value * ratio for value in base_config.residual_scale),
+        )
+        print(
+            "stage=t9_teacher_residual_scale_override "
+            f"stored={stored_multiplier:g} diagnostic={args.residual_scale_multiplier:g}",
+            flush=True,
+        )
     reference = build_ik_reference_bank(xml_path, anchors, specs)
 
     configure_cloud_runtime(mujoco_gl=args.mujoco_gl, verbose=True)
@@ -298,6 +333,7 @@ def main(argv=None):
     disturbed_diagnosis_path = (
         teacher_run / "teacher" / "grid_disturbed_diagnosis.json"
     )
+    long_diagnosis_path = teacher_run / "teacher" / "grid_long_diagnosis.json"
     for speed in selected_speeds:
         index = anchors.index(speed)
         fixed = replace(
@@ -326,6 +362,93 @@ def main(argv=None):
             "reset_batch": disturbed_reset_batch,
             "step_batch": disturbed_step_batch,
         }
+        if args.long_only:
+            ppo_trace = _run_timed(
+                speed,
+                "ppo_long",
+                lambda: _rollout_policy(
+                    jax,
+                    jp,
+                    nominal_env,
+                    "teacher",
+                    teacher_policy,
+                    None,
+                    args.seed + 700 + 1000 * index,
+                    args.long_envs,
+                    args.long_steps,
+                    **common_nominal,
+                ),
+            )
+            ik_trace = _run_timed(
+                speed,
+                "ik_long",
+                lambda: _rollout_policy(
+                    jax,
+                    jp,
+                    nominal_env,
+                    "ik",
+                    teacher_policy,
+                    None,
+                    args.seed + 700 + 1000 * index,
+                    args.long_envs,
+                    args.long_steps,
+                    **common_nominal,
+                ),
+            )
+            ppo_trace.pop("qpos")
+            ik_trace.pop("qpos")
+            long_ppo = summarize_trajectory(
+                ppo_trace,
+                dt=nominal_env.dt,
+                torque_limit=fixed.torque_limit,
+                ctrl_low=nominal_env.contract.ctrl_low,
+                ctrl_high=nominal_env.contract.ctrl_high,
+            )
+            long_ik = summarize_trajectory(
+                ik_trace,
+                dt=nominal_env.dt,
+                torque_limit=fixed.torque_limit,
+                ctrl_low=nominal_env.contract.ctrl_low,
+                ctrl_high=nominal_env.contract.ctrl_high,
+            )
+            long_checks = _long_gate_checks(long_ppo, long_ik)
+            reports[f"{speed:.2f}"] = {
+                "accepted": bool(all(long_checks.values())),
+                "command_vx": speed,
+                "checks": long_checks,
+                "ppo_long_horizon": long_ppo,
+                "ik_long_horizon": long_ik,
+            }
+            print(
+                f"stage=t9_teacher_long_diagnosis vx={speed:.2f} "
+                f"accepted={all(long_checks.values())} "
+                f"ppo_lateral={long_ppo['mean_absolute_lateral_displacement_m']:.4f} "
+                f"ik_lateral={long_ik['mean_absolute_lateral_displacement_m']:.4f} "
+                f"lateral={long_checks['lateral_displacement']} "
+                f"ppo_yaw={long_ppo['mean_absolute_yaw_change_rad']:.4f} "
+                f"ik_yaw={long_ik['mean_absolute_yaw_change_rad']:.4f} "
+                f"yaw={long_checks['yaw_change']}",
+                flush=True,
+            )
+            long_diagnosis_path.write_text(
+                json.dumps(
+                    {
+                        "stage": "T9_FORWARD_COMMAND_TEACHER_LONG_DIAGNOSIS",
+                        "candidate_source": candidate_source,
+                        "candidate_step": candidate_step,
+                        "residual_scale_multiplier": args.residual_scale_multiplier,
+                        "selected_speeds": list(selected_speeds),
+                        "completed_speeds": [float(value) for value in reports],
+                        "long_steps": args.long_steps,
+                        "speed_reports": reports,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            if args.fail_fast and not all(long_checks.values()):
+                break
+            continue
         if args.disturbed_only:
             ppo_disturbed = _run_timed(
                 speed,
@@ -541,6 +664,17 @@ def main(argv=None):
                 flush=True,
             )
             break
+
+    if args.long_only:
+        failed = any(not report["accepted"] for report in reports.values())
+        print(
+            "stage=t9_teacher_long_diagnosis_complete "
+            f"failed={failed} report={long_diagnosis_path}",
+            flush=True,
+        )
+        if args.strict and failed:
+            raise SystemExit(2)
+        return
 
     if args.disturbed_only:
         failed = any(not report["accepted"] for report in reports.values())

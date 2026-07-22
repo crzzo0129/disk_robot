@@ -21,6 +21,8 @@ BASE_MODEL_XML = ASSETS_DIR / "pupper_v3_disk_visual.xml"
 # in the active training candidate (notably ``rear_push`` and ``rolling_folded``).
 ROLLING_PROTOTYPE_XML = BASE_MODEL_XML
 
+TEST_MODEL_XML = ASSETS_DIR / "pupper_v3_disk_test.xml"
+
 # Earlier standalone prototypes.  Kept for their dedicated legacy tools and tests.
 LEGACY_EXTREME_XML = ASSETS_DIR / "disk_quadruped_extreme.xml"
 LEGACY_EXTREME_TRAIN_XML = ASSETS_DIR / "disk_quadruped_extreme_train.xml"

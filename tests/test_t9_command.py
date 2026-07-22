@@ -103,6 +103,20 @@ def test_t9_grid_diagnostic_selects_only_stored_speeds():
     with pytest.raises(SystemExit, match="not a stored anchor"):
         _selected_speeds((0.0, 0.04, 0.08), (0.06,))
 
+    long_args = parse_args(
+        [
+            "--teacher-run",
+            "teacher",
+            "--speeds",
+            "0.06",
+            "--long-only",
+            "--residual-scale-multiplier",
+            "0.5",
+        ]
+    )
+    assert long_args.long_only
+    assert long_args.residual_scale_multiplier == 0.5
+
 
 def test_t9_disturbed_gate_reports_each_failed_criterion():
     from scripts.evaluate_t9_teacher_grid import _disturbed_gate_checks
@@ -151,6 +165,28 @@ def test_t9_stop_disturbance_uses_physical_checks_not_generic_score():
     assert all(checks.values())
     assert "disturbed_score" not in checks
     assert "post_push_lateral_speed" in checks
+
+
+def test_t9_long_gate_exposes_yaw_failure_for_residual_ablation():
+    from scripts.evaluate_t9_teacher_grid import _long_gate_checks
+
+    baseline = {
+        "failure_rate": 0.0,
+        "disk_contact_environment_rate": 0.0,
+        "force_saturation_fraction": 0.0,
+        "mean_absolute_lateral_displacement_m": 0.0197,
+        "mean_absolute_yaw_change_rad": 0.0169,
+    }
+    ppo = dict(baseline)
+    ppo.update(
+        mean_absolute_lateral_displacement_m=0.2562,
+        mean_absolute_yaw_change_rad=0.3184,
+    )
+
+    checks = _long_gate_checks(ppo, baseline)
+
+    assert checks["lateral_displacement"]
+    assert not checks["yaw_change"]
 
 
 def test_t9_grid_gate_can_evaluate_unpromoted_best_ppo(tmp_path):

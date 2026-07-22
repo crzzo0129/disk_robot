@@ -3,15 +3,15 @@ import argparse
 import time
 from pathlib import Path
 
-from disk_robot.model_paths import ACTIVE_MODEL_XML
+from disk_robot.model_paths import TEST_MODEL_XML
 
-XML_PATH = ACTIVE_MODEL_XML
+XML_PATH = TEST_MODEL_XML
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--xml", type=Path, default=XML_PATH)
-    parser.add_argument("--keyframe", default="folded")
+    parser.add_argument("--keyframe", default="home")
     parser.add_argument(
         "--passive",
         action="store_true",
