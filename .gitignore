@@ -19,6 +19,7 @@ mjx_runs/
 ppo_logs/
 ppo_models/
 wandb/
+vedios/
 *.tfevents.*
 
 # MuJoCo/runtime logs

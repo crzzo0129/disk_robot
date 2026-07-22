@@ -143,6 +143,15 @@ def _config_from_teacher_run(run_config):
         penalty_yaw_rate=float(
             run_config.get("penalty_yaw_rate", defaults.penalty_yaw_rate)
         ),
+        penalty_lateral_displacement=float(
+            run_config.get(
+                "penalty_lateral_displacement",
+                defaults.penalty_lateral_displacement,
+            )
+        ),
+        penalty_heading_error=float(
+            run_config.get("penalty_heading_error", defaults.penalty_heading_error)
+        ),
         disturbance_enabled=bool(run_config.get("teacher_disturbances", False)),
         push_step_min=int(run_config.get("push_step_min", defaults.push_step_min)),
         push_step_max=int(run_config.get("push_step_max", defaults.push_step_max)),

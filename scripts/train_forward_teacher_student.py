@@ -53,6 +53,8 @@ def parse_args(argv=None):
     parser.add_argument("--penalty-residual-rate", type=float, default=0.05)
     parser.add_argument("--penalty-lateral-velocity", type=float, default=0.0)
     parser.add_argument("--penalty-yaw-rate", type=float, default=0.0)
+    parser.add_argument("--penalty-lateral-displacement", type=float, default=0.0)
+    parser.add_argument("--penalty-heading-error", type=float, default=0.0)
     parser.add_argument(
         "--residual-scale-multiplier",
         type=float,
@@ -950,6 +952,8 @@ def main(argv=None):
         args.penalty_residual_rate,
         args.penalty_lateral_velocity,
         args.penalty_yaw_rate,
+        args.penalty_lateral_displacement,
+        args.penalty_heading_error,
     ) < 0.0:
         raise SystemExit("reward penalties must be non-negative")
     if args.teacher_selection_mode == "preserve" and not args.teacher_only:
@@ -1037,6 +1041,8 @@ def main(argv=None):
         penalty_residual_rate=args.penalty_residual_rate,
         penalty_lateral_velocity=args.penalty_lateral_velocity,
         penalty_yaw_rate=args.penalty_yaw_rate,
+        penalty_lateral_displacement=args.penalty_lateral_displacement,
+        penalty_heading_error=args.penalty_heading_error,
         disturbance_enabled=args.teacher_disturbances,
         push_step_min=args.push_step_min,
         push_step_max=args.push_step_max,

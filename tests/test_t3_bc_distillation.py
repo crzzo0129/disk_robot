@@ -36,6 +36,8 @@ def test_t3_reconstructs_the_accepted_teacher_environment():
             "penalty_residual_rate": 0.04,
             "penalty_lateral_velocity": 0.5,
             "penalty_yaw_rate": 1.0,
+            "penalty_lateral_displacement": 0.5,
+            "penalty_heading_error": 1.0,
             "teacher_disturbances": True,
             "push_velocity_x": 0.6,
             "push_velocity_y": 0.45,
@@ -50,6 +52,8 @@ def test_t3_reconstructs_the_accepted_teacher_environment():
     assert config.recovery_required_steps == 5
     assert config.penalty_lateral_velocity == 0.5
     assert config.penalty_yaw_rate == 1.0
+    assert config.penalty_lateral_displacement == 0.5
+    assert config.penalty_heading_error == 1.0
     assert config.residual_scale[0] == 0.025
 
 

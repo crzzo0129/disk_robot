@@ -13,6 +13,8 @@ def test_t9_teacher_entry_has_explicit_grid_and_never_distills_inline():
     assert args.teacher_steps == 1_500_000
     assert args.penalty_lateral_velocity == 0.5
     assert args.penalty_yaw_rate == 1.0
+    assert args.penalty_lateral_displacement == 0.5
+    assert args.penalty_heading_error == 1.0
     assert args.mujoco_gl == "disable"
     assert args.smoke
     assert passthrough == []
@@ -22,6 +24,8 @@ def test_t9_teacher_entry_has_explicit_grid_and_never_distills_inline():
     assert '"--command-vx-grid"' in source
     assert '"--penalty-lateral-velocity"' in source
     assert '"--penalty-yaw-rate"' in source
+    assert '"--penalty-lateral-displacement"' in source
+    assert '"--penalty-heading-error"' in source
 
 
 def test_generic_pipeline_rejects_grid_distillation_before_loading_jax():
@@ -317,6 +321,11 @@ def test_t9_environment_owns_episode_command_and_reference_bank():
     assert "student_current_command_only" in source
     assert '"lateral_velocity": -self.config.penalty_lateral_velocity' in source
     assert '"yaw_rate": -self.config.penalty_yaw_rate' in source
+    assert '"origin_yaw": origin_yaw' in source
+    assert '"origin_y": origin_y' in source
+    assert "jp.arctan2(jp.sin(heading_delta), jp.cos(heading_delta))" in source
+    assert '"heading_error": -self.config.penalty_heading_error' in source
+    assert '"lateral_displacement": -self.config.penalty_lateral_displacement' in source
 
 
 def test_t9_student_retention_uses_paired_phase_zero_seeds():

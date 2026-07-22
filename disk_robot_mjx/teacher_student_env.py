@@ -218,6 +218,9 @@ def make_forward_teacher_student_env(
             last_push = jp.zeros(2)
             smoothed_world_velocity = jp.zeros(2)
             recovery_streak = jp.array(0, dtype=jp.int32)
+            torso_mat = data.xmat[self.torso_body_id]
+            origin_yaw = jp.arctan2(torso_mat[1, 0], torso_mat[0, 0])
+            origin_y = data.xpos[self.torso_body_id, 1]
             student_history = jp.zeros(self.config.student_observation_size)
             student_obs = self._update_student_history(
                 student_history,
@@ -248,6 +251,8 @@ def make_forward_teacher_student_env(
                 "control_delay": control_delay,
                 "smoothed_world_velocity": smoothed_world_velocity,
                 "recovery_streak": recovery_streak,
+                "origin_yaw": origin_yaw,
+                "origin_y": origin_y,
             }
             if self.role != "student":
                 actual_contacts = self._foot_contacts(data)
@@ -340,6 +345,12 @@ def make_forward_teacher_student_env(
             torso_mat = data.xmat[self.torso_body_id]
             body_velocity = torso_mat.T @ world_velocity
             body_angular_velocity = torso_mat.T @ data.cvel[self.torso_body_id, :3]
+            yaw = jp.arctan2(torso_mat[1, 0], torso_mat[0, 0])
+            heading_delta = yaw - state.info["origin_yaw"]
+            heading_error = jp.arctan2(jp.sin(heading_delta), jp.cos(heading_delta))
+            lateral_displacement = (
+                data.xpos[self.torso_body_id, 1] - state.info["origin_y"]
+            )
             upright = torso_mat[2, 2]
             torso_height = data.xpos[self.torso_body_id, 2]
             actual_contacts = self._foot_contacts(data)
@@ -425,6 +436,10 @@ def make_forward_teacher_student_env(
                 * jp.abs(world_velocity[1]),
                 "yaw_rate": -self.config.penalty_yaw_rate
                 * jp.abs(body_angular_velocity[2]),
+                "lateral_displacement": -self.config.penalty_lateral_displacement
+                * jp.abs(lateral_displacement),
+                "heading_error": -self.config.penalty_heading_error
+                * jp.abs(heading_error),
                 "roll_pitch_rate": -self.config.penalty_roll_pitch_rate
                 * jp.sum(jp.square(body_angular_velocity[:2])),
                 "orientation": -self.config.penalty_orientation * (1.0 - upright * upright),
@@ -495,6 +510,10 @@ def make_forward_teacher_student_env(
                 "body_velocity_y": body_velocity[1],
                 "yaw_rate": body_angular_velocity[2],
                 "abs_yaw_rate": jp.abs(body_angular_velocity[2]),
+                "lateral_displacement": lateral_displacement,
+                "abs_lateral_displacement": jp.abs(lateral_displacement),
+                "heading_error": heading_error,
+                "abs_heading_error": jp.abs(heading_error),
                 "velocity_error": jp.abs(velocity_error),
                 "smoothed_velocity_error": smoothed_velocity_error,
                 "roll_pitch_rate_rms": jp.sqrt(jp.mean(jp.square(body_angular_velocity[:2]))),
@@ -678,6 +697,10 @@ def make_forward_teacher_student_env(
                 "body_velocity_y",
                 "yaw_rate",
                 "abs_yaw_rate",
+                "lateral_displacement",
+                "abs_lateral_displacement",
+                "heading_error",
+                "abs_heading_error",
                 "velocity_error",
                 "smoothed_velocity_error",
                 "roll_pitch_rate_rms",
@@ -702,6 +725,8 @@ def make_forward_teacher_student_env(
                 "vertical_velocity",
                 "lateral_velocity",
                 "yaw_rate",
+                "lateral_displacement",
+                "heading_error",
                 "roll_pitch_rate",
                 "orientation",
                 "joint_velocity",

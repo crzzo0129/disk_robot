@@ -964,6 +964,30 @@ After training, run the `vx=0.06 --long-only` diagnosis first on the new run. Do
 time on the full grid or BC unless straightness improves while disturbed recovery remains
 acceptable.
 
+The first straightness candidate (`0.5*|vy| + 1.0*|yaw_rate|`) improved the `vx=0.06`
+30-second drift from `0.256/0.318` lateral/yaw to `0.231/0.253`, but still missed the yaw
+gate. Raising those instantaneous weights to `0.75/1.5` produced `0.227/0.280`, so further
+instantaneous-weight tuning is stopped.
+
+The next T9 candidate adds cumulative, reset-relative straightness costs without changing
+the 138D Student observation contract:
+
+```text
+origin_yaw, origin_y          captured after reset
+heading_error                 wrap(current_yaw - origin_yaw)
+lateral_displacement          current_world_y - origin_y
+T9 reward additions           -1.0*|heading_error| -0.5*|lateral_displacement|
+generic T2a/T8 defaults       both zero
+```
+
+These signals are reward/metrics only, not policy observations. They target systematic gait
+bias; they are not yet an absolute-heading feedback controller. Use a 750-step smoke so the
+training episode exposes more accumulated drift:
+
+```bash
+python -m scripts.train_t9_forward_teacher --smoke --episode-length 750 --teacher-restore mjx_runs/teacher_t9_vx_grid_seed0/teacher/ppo_checkpoint --out mjx_runs/teacher_t9_vx_grid_heading_smoke_seed0 --mujoco-gl disable
+```
+
 Only if `stage=t9_teacher_grid_acceptance accepted=True`, run Student smoke and formal BC:
 
 ```bash

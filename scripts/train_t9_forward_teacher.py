@@ -26,6 +26,8 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-restore", type=Path, default=None)
     parser.add_argument("--penalty-lateral-velocity", type=float, default=0.5)
     parser.add_argument("--penalty-yaw-rate", type=float, default=1.0)
+    parser.add_argument("--penalty-lateral-displacement", type=float, default=0.5)
+    parser.add_argument("--penalty-heading-error", type=float, default=1.0)
     parser.add_argument("--xml-path", type=Path, default=None)
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--smoke", action="store_true")
@@ -72,6 +74,10 @@ def main(argv=None):
         str(args.penalty_lateral_velocity),
         "--penalty-yaw-rate",
         str(args.penalty_yaw_rate),
+        "--penalty-lateral-displacement",
+        str(args.penalty_lateral_displacement),
+        "--penalty-heading-error",
+        str(args.penalty_heading_error),
         "--teacher-selection-mode",
         "robust",
         "--teacher-disturbances",

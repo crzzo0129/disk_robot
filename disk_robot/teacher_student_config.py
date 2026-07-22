@@ -68,6 +68,8 @@ class ForwardTeacherStudentConfig:
     penalty_vertical_velocity: float = 0.2
     penalty_lateral_velocity: float = 0.0
     penalty_yaw_rate: float = 0.0
+    penalty_lateral_displacement: float = 0.0
+    penalty_heading_error: float = 0.0
     penalty_roll_pitch_rate: float = 0.20
     penalty_orientation: float = 0.8
     penalty_joint_velocity: float = 0.0005
