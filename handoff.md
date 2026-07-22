@@ -906,6 +906,13 @@ Then run the mandatory grid gate:
 python -m scripts.evaluate_t9_teacher_grid --teacher-run mjx_runs/teacher_t9_vx_grid_seed0 --mujoco-gl disable --strict
 ```
 
+The generic trainer's legacy aggregate robust selector is preliminary for T9. It may print
+`source=ik_baseline` even though it saved a valid `teacher/params_ppo_best`; this is not a
+reason to rerun the 1.5M-step job. The T9 grid evaluator loads that saved PPO candidate
+directly. If every per-speed gate passes, it promotes the candidate to `teacher/params` and
+updates `selection.json` to `selected_source=ppo`. If no PPO candidate artifact exists, stop
+instead of evaluating the IK baseline.
+
 Only if `stage=t9_teacher_grid_acceptance accepted=True`, run Student smoke and formal BC:
 
 ```bash

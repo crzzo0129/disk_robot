@@ -43,6 +43,27 @@ def _read_json(path):
         raise SystemExit(f"could not read T9 artifact {path}: {exc}") from exc
 
 
+def _candidate_params_path(teacher_run, selection):
+    """Returns the PPO candidate that the T9 grid gate must independently judge."""
+    teacher_dir = teacher_run / "teacher"
+    candidates = []
+    if selection.get("selected_source") == "ppo":
+        candidates.append(("selected_ppo", teacher_dir / "params"))
+    candidates.extend(
+        (
+            ("ppo_best", teacher_dir / "params_ppo_best"),
+            ("ppo_final", teacher_dir / "params_final"),
+        )
+    )
+    for source, path in candidates:
+        if path.exists():
+            return source, path
+    raise SystemExit(
+        "T9 grid validation requires a saved PPO candidate "
+        "(teacher/params_ppo_best or teacher/params_final)"
+    )
+
+
 def _speed_gate(
     speed,
     ppo_nominal,
@@ -101,11 +122,15 @@ def main(argv=None):
     selection = _read_json(teacher_run / "teacher" / "selection.json")
     if run_config.get("stage") != "T9_FORWARD_COMMAND_TEACHER":
         raise SystemExit("teacher run is not a T9 command-grid run")
-    if selection.get("selected_source") != "ppo":
-        raise SystemExit("T9 grid validation requires a selected PPO Teacher")
-    params_path = teacher_run / "teacher" / "params"
-    if not params_path.exists():
-        raise SystemExit(f"T9 Teacher params are missing: {params_path}")
+    candidate_source, candidate_params_path = _candidate_params_path(
+        teacher_run, selection
+    )
+    candidate_step = int(selection.get("ppo_step", selection.get("selected_step", 0)))
+    print(
+        f"stage=t9_teacher_candidate source={candidate_source} "
+        f"step={candidate_step:,} params={candidate_params_path}",
+        flush=True,
+    )
     anchors = validate_forward_speed_anchors(run_config.get("command_vx_grid", ()))
     specs = tuple(
         IKReferenceSpec(**values)
@@ -137,8 +162,9 @@ def main(argv=None):
         action_size=template_env.action_size,
         preprocess_observations_fn=running_statistics.normalize,
     )
+    candidate_params = model_io.load_params(candidate_params_path)
     teacher_policy = ppo_networks.make_inference_fn(networks)(
-        model_io.load_params(params_path), deterministic=True
+        candidate_params, deterministic=True
     )
     zero_policy = lambda obs, rng: (
         jp.zeros(obs.shape[:-1] + (template_env.action_size,)),
@@ -221,6 +247,9 @@ def main(argv=None):
     grid_report = {
         "stage": "T9_FORWARD_COMMAND_TEACHER_GRID_EVALUATION",
         "accepted": accepted,
+        "candidate_source": candidate_source,
+        "candidate_step": candidate_step,
+        "candidate_params": str(candidate_params_path),
         "anchors": list(anchors),
         "steps": args.steps,
         "long_steps": args.long_steps,
@@ -233,6 +262,19 @@ def main(argv=None):
     evaluation["grid_evaluation"] = str(grid_path)
     evaluation["stage"] = "T9_FORWARD_COMMAND_TEACHER"
     if accepted:
+        params_path = teacher_run / "teacher" / "params"
+        model_io.save_params(params_path, candidate_params)
+        selection["selected_source"] = "ppo"
+        selection["selected_step"] = candidate_step
+        selection["selected_score"] = selection.get("ppo_score")
+        selection["selected_by"] = "t9_speed_grid_gate"
+        selection["selected_params"] = str(params_path)
+        (teacher_run / "teacher" / "selection.json").write_text(
+            json.dumps(selection, indent=2), encoding="utf-8"
+        )
+        evaluation["selected_source"] = "ppo"
+        evaluation["selected_step"] = candidate_step
+        evaluation["selected_by"] = "t9_speed_grid_gate"
         evaluation.pop("rejection_reason", None)
     else:
         evaluation["rejection_reason"] = "t9_speed_grid_gate_failed"

@@ -81,6 +81,37 @@ def test_t9_speed_gate_requires_nominal_disturbed_and_long_horizon():
     assert not failing["long_horizon_safe"]
 
 
+def test_t9_grid_gate_can_evaluate_unpromoted_best_ppo(tmp_path):
+    from scripts.evaluate_t9_teacher_grid import _candidate_params_path
+
+    teacher = tmp_path / "teacher"
+    teacher.mkdir()
+    best = teacher / "params_ppo_best"
+    best.mkdir()
+
+    source, path = _candidate_params_path(
+        tmp_path, {"selected_source": "ik_baseline", "ppo_step": 123}
+    )
+
+    assert source == "ppo_best"
+    assert path == best
+
+
+def test_t9_grid_gate_prefers_already_promoted_ppo(tmp_path):
+    from scripts.evaluate_t9_teacher_grid import _candidate_params_path
+
+    teacher = tmp_path / "teacher"
+    teacher.mkdir()
+    selected = teacher / "params"
+    selected.mkdir()
+    (teacher / "params_ppo_best").mkdir()
+
+    source, path = _candidate_params_path(tmp_path, {"selected_source": "ppo"})
+
+    assert source == "selected_ppo"
+    assert path == selected
+
+
 def test_t9_reference_bank_builds_stop_and_moving_tables():
     from disk_robot.t9_command import build_t9_reference_bank
     from disk_robot_mjx.teacher_student_env import DEFAULT_XML
