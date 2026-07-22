@@ -49,6 +49,26 @@ def test_t3_reconstructs_the_accepted_teacher_environment():
     assert config.residual_scale[0] == 0.025
 
 
+def test_teacher_config_loader_ignores_walk_config_only_fields():
+    from scripts.distill_forward_student import _config_from_teacher_run
+
+    config = _config_from_teacher_run(
+        {
+            "command_vx": 0.08,
+            "config": {
+                "command_vx": 0.06,
+                "command_vx_min": 0.0,
+                "command_vx_max": 0.10,
+                "actuator_kp": 12.0,
+            },
+        }
+    )
+
+    assert config.command_vx == 0.08
+    assert config.actuator_kp == 12.0
+    assert not hasattr(config, "command_vx_min")
+
+
 def test_dataset_subsampling_covers_the_full_rollout_and_keeps_labels_aligned():
     from scripts.train_forward_teacher_student import _sample_dataset_rows
 

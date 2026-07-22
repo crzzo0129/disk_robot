@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, replace
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 
 import numpy as np
@@ -102,7 +102,24 @@ def _load_accepted_teacher_run(teacher_run: Path):
 
 
 def _config_from_teacher_run(run_config):
-    defaults = ForwardTeacherStudentConfig()
+    # Some historical artifacts embedded a broader locomotion config containing
+    # WalkConfig-only keys such as command_vx_min/command_vx_max.  Never pass
+    # those serialized dictionaries through wholesale: only constructor fields
+    # belonging to the Teacher/Student contract may seed the defaults.
+    stored_config = run_config.get("config")
+    if isinstance(stored_config, dict):
+        init_fields = {
+            field.name for field in fields(ForwardTeacherStudentConfig) if field.init
+        }
+        defaults = ForwardTeacherStudentConfig(
+            **{
+                key: value
+                for key, value in stored_config.items()
+                if key in init_fields
+            }
+        )
+    else:
+        defaults = ForwardTeacherStudentConfig()
     residual_multiplier = float(run_config.get("residual_scale_multiplier", 1.0))
     return ForwardTeacherStudentConfig(
         max_episode_steps=int(run_config.get("episode_length", defaults.max_episode_steps)),

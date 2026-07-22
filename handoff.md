@@ -913,6 +913,12 @@ directly. If every per-speed gate passes, it promotes the candidate to `teacher/
 updates `selection.json` to `selected_source=ppo`. If no PPO candidate artifact exists, stop
 instead of evaluating the IK baseline.
 
+The grid evaluator and T9 distiller share the defensive Teacher-config loader in
+`scripts/distill_forward_student.py`. Keep that file synchronized too: older copies that
+unpack a serialized locomotion config wholesale can fail on WalkConfig-only fields such as
+`command_vx_min` before grid evaluation starts. This is an artifact-loading compatibility
+issue and does not require retraining the saved PPO candidate.
+
 Only if `stage=t9_teacher_grid_acceptance accepted=True`, run Student smoke and formal BC:
 
 ```bash
